@@ -1,0 +1,66 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcworkspace/
+*.xcodeproj/
+*.xcuserdatad/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+xcuserdata/
+*.xcresult
+*.xcarchive
+*.dSYM
+*.ipa
+*.hmap
+*.moved-aside
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+.swiftpm/
+.build/
+Package.resolved
+
+# Apple signing / App Store Connect
+.env*
+*.mobileprovision
+*.provisionprofile
+ExportOptions.plist
+*.xcconfig
+*.entitlements
+*.p8
+*.p12
+*.cer
+*.pem
+*.key
+AuthKey_*.p8
+
+# CocoaPods
+Pods/
+!Podfile.lock
+
+# Claude Code
+.claude/
+
+# Local progress memo
+progress.txt
+
+# Private planning docs
+private-docs/
+
+# Local logs and cross-project notes
+stacktrace.txt
+docs/plans/
+docs/plans/2026-03-04-*-feature-brief.md
+
+# Local Firebase config
+.private/
+PFile/GoogleService-Info.plist
+GoogleService-Info.plist
+
+# Generated local Info.plist
+PFile/Resources/Info.plist
