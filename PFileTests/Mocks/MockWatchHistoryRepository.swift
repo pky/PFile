@@ -39,9 +39,15 @@ final class MockWatchHistoryRepository: WatchHistoryRepository {
         upsertedCalls.append((filePath: filePath, position: lastPositionSeconds))
     }
 
-    func fetchLastPosition(sourceID: String, filePath: String) async throws -> Double? {
+    func fetchLastPosition(sourceID: String, filePath: String, fileId: UInt64?) async throws -> Double? {
         if shouldThrow { throw TestError.mock }
-        return histories.first { $0.sourceID == sourceID && $0.filePath == filePath }?.lastPositionSeconds
+        return histories.first {
+            guard $0.sourceID == sourceID else { return false }
+            if let fileId, fileId > 0 {
+                return $0.fileId == fileId || $0.filePath == filePath
+            }
+            return $0.filePath == filePath
+        }?.lastPositionSeconds
     }
 
     func trim(to limit: Int) async throws {

@@ -200,7 +200,8 @@ struct VideoPlayerView: View {
         let sourceID = ContentSource.remote(connection.id).id
         return (try? await appEnvironment.watchHistoryRepository.fetchLastPosition(
             sourceID: sourceID,
-            filePath: item.path
+            filePath: item.path,
+            fileId: item.fileId
         )) ?? 0
     }
 

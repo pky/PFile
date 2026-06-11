@@ -21,7 +21,7 @@ struct WatchHistoryResumePositionTests {
             )
         ]
 
-        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4")
+        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4", fileId: nil)
 
         #expect(position == 42.0)
     }
@@ -33,7 +33,7 @@ struct WatchHistoryResumePositionTests {
         let sourceID = ContentSource.remote(connection.id).id
         repo.histories = []
 
-        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4")
+        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4", fileId: nil)
 
         #expect(position == nil)
     }
@@ -55,7 +55,7 @@ struct WatchHistoryResumePositionTests {
             )
         ]
 
-        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4")
+        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4", fileId: nil)
 
         #expect(position == nil)
     }
@@ -75,7 +75,7 @@ struct WatchHistoryResumePositionTests {
             )
         ]
 
-        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4")
+        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4", fileId: nil)
 
         #expect(position == nil)
     }
@@ -86,7 +86,7 @@ struct WatchHistoryResumePositionTests {
         repo.shouldThrow = true
 
         await #expect(throws: (any Error).self) {
-            _ = try await repo.fetchLastPosition(sourceID: "any", filePath: "/any.mp4")
+            _ = try await repo.fetchLastPosition(sourceID: "any", filePath: "/any.mp4", fileId: nil)
         }
     }
 
@@ -112,7 +112,7 @@ struct WatchHistoryResumePositionTests {
             thumbnailData: nil
         )
 
-        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4")
+        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4", fileId: nil)
 
         #expect(position == 0)
     }
@@ -139,7 +139,7 @@ struct WatchHistoryResumePositionTests {
             thumbnailData: nil
         )
 
-        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4")
+        let position = try await repo.fetchLastPosition(sourceID: sourceID, filePath: "/videos/a.mp4", fileId: nil)
 
         #expect(position == 5_189.507)
     }
@@ -181,6 +181,37 @@ struct WatchHistoryResumePositionTests {
         #expect(histories.count == 1)
         #expect(histories[0].filePath == "/new/a.mp4")
         #expect(histories[0].lastPositionSeconds == 70)
+    }
+
+    @Test("fileIdが一致する履歴は移動後のパスでも再開位置を返す")
+    func fetchLastPosition_foundByFileIdAfterMove() async throws {
+        let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(
+            for: Schema([WatchHistory.self, RemoteConnection.self]),
+            configurations: [configuration]
+        )
+        let repo = WatchHistoryRepositoryImpl(context: ModelContext(container))
+        let connection = ModelFactory.makeConnection()
+        let sourceID = ContentSource.remote(connection.id).id
+
+        try await repo.upsert(
+            sourceID: sourceID,
+            connection: connection,
+            filePath: "/new2/a.mp4",
+            fileName: "a.mp4",
+            lastPositionSeconds: 60,
+            durationSeconds: 120,
+            fileId: 123,
+            thumbnailData: nil
+        )
+
+        let position = try await repo.fetchLastPosition(
+            sourceID: sourceID,
+            filePath: "/a.mp4",
+            fileId: 123
+        )
+
+        #expect(position == 60)
     }
 
     @Test("重複した同一動画履歴はupsert時に1件へ統合する")

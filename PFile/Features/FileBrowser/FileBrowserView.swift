@@ -493,7 +493,8 @@ private struct DirectoryContentView: View {
             if resumePlayback {
                 startPosition = (try? await appEnvironment.watchHistoryRepository.fetchLastPosition(
                     sourceID: source.id,
-                    filePath: item.path
+                    filePath: item.path,
+                    fileId: item.fileId
                 )) ?? 0
             }
             let pageSource = MediaViewerPageSource(
@@ -730,7 +731,8 @@ private struct FileBrowserSearchSheet: View {
             if resumePlayback {
                 startPosition = (try? await appEnvironment.watchHistoryRepository.fetchLastPosition(
                     sourceID: source.id,
-                    filePath: item.path
+                    filePath: item.path,
+                    fileId: item.fileId
                 )) ?? 0
             }
             let pageSource = MediaViewerPageSource(

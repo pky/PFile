@@ -100,9 +100,16 @@ final class WatchHistoryRepositoryImpl: WatchHistoryRepository {
         try await trim(to: WatchHistoryLimitSettings.currentLimit)
     }
 
-    func fetchLastPosition(sourceID: String, filePath: String) async throws -> Double? {
+    func fetchLastPosition(sourceID: String, filePath: String, fileId: UInt64?) async throws -> Double? {
         let all = try context.fetch(FetchDescriptor<WatchHistory>())
-        guard let history = all.first(where: { $0.sourceID == sourceID && $0.filePath == filePath }) else {
+        let history = all.first { history in
+            guard history.sourceID == sourceID else { return false }
+            if let fileId, fileId > 0 {
+                return history.fileId == fileId || history.filePath == filePath
+            }
+            return history.filePath == filePath
+        }
+        guard let history else {
             return nil
         }
         return ResumePositionPolicy.normalizedPosition(

@@ -28,7 +28,7 @@ protocol WatchHistoryRepository {
         fileId: UInt64?,
         thumbnailData: Data?
     ) async throws
-    func fetchLastPosition(sourceID: String, filePath: String) async throws -> Double?
+    func fetchLastPosition(sourceID: String, filePath: String, fileId: UInt64?) async throws -> Double?
     func trim(to limit: Int) async throws
     func delete(_ history: WatchHistory) async throws
     func deleteAll() async throws

@@ -372,7 +372,8 @@ struct MediaListDetailView: View {
             if resumePlayback, resolvedFile.itemTypeRaw == "video" {
                 startPosition = (try? await appEnvironment.watchHistoryRepository.fetchLastPosition(
                     sourceID: resolvedFile.sourceID,
-                    filePath: resolvedFile.path
+                    filePath: resolvedFile.path,
+                    fileId: resolvedFile.fileId
                 )) ?? 0
             }
             selectedRoute = MediaViewerPageSource
