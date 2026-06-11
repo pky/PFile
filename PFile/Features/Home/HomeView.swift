@@ -56,7 +56,7 @@ struct HomeView: View {
 #if DEBUG && targetEnvironment(simulator)
     private static let simulatorVideosSourceID = UUID(uuidString: "00000000-0000-0000-0000-000000000017")!
     private static var simulatorVideosRootURL: URL {
-        let path = ProcessInfo.processInfo.environment["PFILE_SIMULATOR_VIDEOS_ROOT"] ?? "/Volumes/videos/movies"
+        let path = ProcessInfo.processInfo.environment["PFILE_SIMULATOR_VIDEOS_ROOT"] ?? "/Volumes/videos"
         return URL(fileURLWithPath: path, isDirectory: true)
     }
 
@@ -79,6 +79,12 @@ struct HomeView: View {
 
     private var currentScopeID: String? {
         selectedSource?.id
+    }
+
+    private func selectSource(_ source: ContentSource) {
+        selectedSource = source
+        selectedTab = .browse
+        columnVisibility = .detailOnly
     }
 
     var body: some View {
@@ -258,8 +264,7 @@ struct HomeView: View {
 #endif
                         ForEach(localFoldersViewModel.sources) { source in
                             Button {
-                                selectedSource = .localFolder(source.id)
-                                selectedTab = .browse
+                                selectSource(.localFolder(source.id))
                             } label: {
                                 LocalFolderSourceRowView(source: source)
                             }
@@ -296,8 +301,7 @@ struct HomeView: View {
                 Section {
                     ForEach(viewModel.connections) { connection in
                         Button {
-                            selectedSource = .remote(connection.id)
-                            selectedTab = .browse
+                            selectSource(.remote(connection.id))
                         } label: {
                             ConnectionRowView(connection: connection)
                         }
@@ -355,8 +359,7 @@ struct HomeView: View {
     @ViewBuilder
     private func localSourceButton(_ source: ContentSource) -> some View {
         Button {
-            selectedSource = source
-            selectedTab = .browse
+            selectSource(source)
         } label: {
             SourceRowView(source: source)
         }
@@ -450,8 +453,7 @@ struct HomeView: View {
 #endif
                     ForEach(localFoldersViewModel.sources) { source in
                         Button {
-                            selectedSource = .localFolder(source.id)
-                            selectedTab = .browse
+                            selectSource(.localFolder(source.id))
                         } label: {
                             LocalFolderSourceRowView(source: source)
                         }
@@ -470,8 +472,7 @@ struct HomeView: View {
                 if let connectionsViewModel {
                     ForEach(connectionsViewModel.connections) { connection in
                         Button {
-                            selectedSource = .remote(connection.id)
-                            selectedTab = .browse
+                            selectSource(.remote(connection.id))
                         } label: {
                             ConnectionRowView(connection: connection)
                         }
@@ -491,8 +492,7 @@ struct HomeView: View {
     @ViewBuilder
     private func localSourcePickerButton(_ source: ContentSource) -> some View {
         Button {
-            selectedSource = source
-            selectedTab = .browse
+            selectSource(source)
         } label: {
             SourceRowView(source: source)
         }
@@ -512,8 +512,7 @@ struct HomeView: View {
 #if DEBUG && targetEnvironment(simulator)
     private var simulatorVideosButton: some View {
         Button {
-            selectedSource = .localFolder(Self.simulatorVideosSourceID)
-            selectedTab = .browse
+            selectSource(.localFolder(Self.simulatorVideosSourceID))
         } label: {
             Label {
                 VStack(alignment: .leading, spacing: 2) {

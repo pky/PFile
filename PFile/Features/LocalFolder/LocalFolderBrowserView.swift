@@ -80,6 +80,15 @@ struct LocalFolderBrowserView: View {
 
     private func resolveRootURL() async {
         if let directRootURL {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: directRootURL.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                await MainActor.run {
+                    errorMessage = "フォルダが見つかりません: \(directRootURL.path)"
+                }
+                return
+            }
+
             await MainActor.run {
                 rootURL = directRootURL
                 isAccessing = false
