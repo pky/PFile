@@ -53,6 +53,22 @@ struct HomeView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @Namespace private var tabIndicator
 
+#if DEBUG && targetEnvironment(simulator)
+    private static let simulatorVideosSourceID = UUID(uuidString: "00000000-0000-0000-0000-000000000017")!
+    private static var simulatorVideosRootURL: URL {
+        let path = ProcessInfo.processInfo.environment["PFILE_SIMULATOR_VIDEOS_ROOT"] ?? "/Volumes/videos/movies"
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    private var simulatorVideosSource: LocalFolderSource {
+        LocalFolderSource(
+            id: Self.simulatorVideosSourceID,
+            displayName: "Simulator Videos",
+            bookmarkData: Data()
+        )
+    }
+#endif
+
     // リスト管理
     @State private var listsViewModel: MediaListsViewModel?
     @State private var showCreateListAlert = false
@@ -237,6 +253,9 @@ struct HomeView: View {
                         if localFoldersViewModel.sources.isEmpty {
                             localFolderEmptyStateRow
                         }
+#if DEBUG && targetEnvironment(simulator)
+                        simulatorVideosButton
+#endif
                         ForEach(localFoldersViewModel.sources) { source in
                             Button {
                                 selectedSource = .localFolder(source.id)
@@ -362,6 +381,11 @@ struct HomeView: View {
                     selectedTab = .browse
                 }
             case .localFolder(let id):
+#if DEBUG && targetEnvironment(simulator)
+                if id == Self.simulatorVideosSourceID {
+                    break
+                }
+#endif
                 if !(localFoldersViewModel?.sources.contains(where: { $0.id == id }) ?? false) {
                     self.selectedSource = nil
                     selectedTab = .browse
@@ -421,6 +445,9 @@ struct HomeView: View {
                     if localFoldersViewModel.sources.isEmpty {
                         localFolderEmptyStateRow
                     }
+#if DEBUG && targetEnvironment(simulator)
+                    simulatorVideosButton
+#endif
                     ForEach(localFoldersViewModel.sources) { source in
                         Button {
                             selectedSource = .localFolder(source.id)
@@ -481,6 +508,40 @@ struct HomeView: View {
         }
         .padding(.vertical, 4)
     }
+
+#if DEBUG && targetEnvironment(simulator)
+    private var simulatorVideosButton: some View {
+        Button {
+            selectedSource = .localFolder(Self.simulatorVideosSourceID)
+            selectedTab = .browse
+        } label: {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Simulator Videos")
+                    Text(Self.simulatorVideosRootURL.path)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: "iphone")
+                    .foregroundStyle(.tint)
+            }
+        }
+        .listRowBackground(
+            selectedSource == .localFolder(Self.simulatorVideosSourceID)
+                ? Color.accentColor.opacity(0.15)
+                : nil
+        )
+    }
+
+    private var simulatorVideosBrowserView: some View {
+        LocalFolderBrowserView(
+            source: simulatorVideosSource,
+            directRootURL: Self.simulatorVideosRootURL
+        )
+        .id(Self.simulatorVideosSourceID)
+    }
+#endif
 
     private func sectionHeader(title: String, buttonTitle: String, action: @escaping () -> Void) -> some View {
         HStack {
@@ -745,12 +806,23 @@ struct HomeView: View {
                             ContentUnavailableView("接続先を選択", systemImage: "externaldrive.connected.to.line.below")
                         }
                     case .localFolder(let sourceID):
+#if DEBUG && targetEnvironment(simulator)
+                        if sourceID == Self.simulatorVideosSourceID {
+                            simulatorVideosBrowserView
+                        } else if let source = localFoldersViewModel?.sources.first(where: { $0.id == sourceID }) {
+                            LocalFolderBrowserView(source: source)
+                                .id(source.id)
+                        } else {
+                            ContentUnavailableView("ローカルフォルダを選択", systemImage: "internaldrive")
+                        }
+#else
                         if let source = localFoldersViewModel?.sources.first(where: { $0.id == sourceID }) {
                             LocalFolderBrowserView(source: source)
                                 .id(source.id)
                         } else {
                             ContentUnavailableView("ローカルフォルダを選択", systemImage: "internaldrive")
                         }
+#endif
                     case .photoLibrary:
                         PhotoLibraryBrowserView(isActive: selectedTab == .browse)
                     case nil:

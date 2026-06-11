@@ -5,6 +5,7 @@ import UIKit
 struct LocalFolderBrowserView: View {
     @Environment(\.appEnvironment) private var appEnvironment
     let source: LocalFolderSource
+    private let directRootURL: URL?
 
     @State private var rootURL: URL?
     @State private var isAccessing = false
@@ -13,6 +14,11 @@ struct LocalFolderBrowserView: View {
     @State private var errorMessage: String?
     @State private var hasRestoredNavigationPath = false
     @State private var cachedViewModels: [String: LocalFolderBrowserViewModel] = [:]
+
+    init(source: LocalFolderSource, directRootURL: URL? = nil) {
+        self.source = source
+        self.directRootURL = directRootURL
+    }
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -73,6 +79,14 @@ struct LocalFolderBrowserView: View {
     }
 
     private func resolveRootURL() async {
+        if let directRootURL {
+            await MainActor.run {
+                rootURL = directRootURL
+                isAccessing = false
+            }
+            return
+        }
+
         do {
             let resolvedBookmark = try LocalFolderBookmarkService.resolveBookmark(from: source.bookmarkData)
             let url = resolvedBookmark.url

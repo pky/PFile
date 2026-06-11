@@ -5,6 +5,7 @@ import AMSMB2
 #endif
 
 @Observable
+@MainActor
 final class ConnectionEditViewModel {
 
     var displayName: String
