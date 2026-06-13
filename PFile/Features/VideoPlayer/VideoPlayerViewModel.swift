@@ -1,10 +1,40 @@
 import Foundation
 import UIKit
+import AVFoundation
 import MobileVLCKit
 
 #if !targetEnvironment(simulator)
 import AMSMB2
 #endif
+
+struct VideoPlayerCachingPolicy {
+    let networkCachingMilliseconds: Int
+    let inputCachingMilliseconds: Int
+
+    static func directSMB(fileSize: Int64?) -> VideoPlayerCachingPolicy {
+        guard let fileSize, fileSize > 0 else {
+            return VideoPlayerCachingPolicy(networkCachingMilliseconds: 500, inputCachingMilliseconds: 3000)
+        }
+
+        let gib = Int64(1024 * 1024 * 1024)
+        switch fileSize {
+        case (8 * gib)...:
+            return VideoPlayerCachingPolicy(networkCachingMilliseconds: 1000, inputCachingMilliseconds: 6000)
+        case (4 * gib)...:
+            return VideoPlayerCachingPolicy(networkCachingMilliseconds: 750, inputCachingMilliseconds: 5000)
+        case (2 * gib)...:
+            return VideoPlayerCachingPolicy(networkCachingMilliseconds: 500, inputCachingMilliseconds: 4000)
+        default:
+            return VideoPlayerCachingPolicy(networkCachingMilliseconds: 500, inputCachingMilliseconds: 3000)
+        }
+    }
+}
+
+struct VideoPlayerInteractiveSeekPolicy {
+    static let directSMBPreviewEnabled = false
+    static let previewIntervalMilliseconds = 300
+    static let minimumPreviewDeltaSeconds = 0.25
+}
 
 @Observable
 final class VideoPlayerViewModel: NSObject {
@@ -13,6 +43,7 @@ final class VideoPlayerViewModel: NSObject {
         case directSMB
         case smbStream
         case httpProxy
+        case avPlayer
     }
 
     var isPlaying = false
@@ -20,6 +51,15 @@ final class VideoPlayerViewModel: NSObject {
     var currentPositionSeconds: Double = 0
     var durationSeconds: Double = 0
     var errorMessage: String?
+
+    // MP4 / MOV は AVPlayer 経路で再生する。true のとき View は AVPlayerLayer を描画する。
+    private(set) var usesAVPlayer = false
+    private(set) var avPlayer: AVPlayer?
+    // AVPlayer 経路の drag 中スクラブで表示するプレビュー画像。
+    private(set) var scrubPreviewImage: UIImage?
+    private var scrubPreviewTask: Task<Void, Never>?
+    // 一瞬の buffering でスピナーを点滅させないためのデバウンス。
+    private var avBufferingDebounceTask: Task<Void, Never>?
 
     private(set) var isBuffering = true
     private var hasEverStartedPlaying = false
@@ -60,12 +100,16 @@ final class VideoPlayerViewModel: NSObject {
 
     private struct InteractiveSeekDiagnostics {
         let startedAt: CFAbsoluteTime
-        let startedSeconds: Double
+        let startedPlaybackSeconds: Double
+        let startedRequestSeconds: Double
         var requestCount = 0
+        var firstRequestIssuedAt: CFAbsoluteTime?
         var lastRequestIssuedAt: CFAbsoluteTime?
         var lastRequestedSeconds: Double?
         var finalRequestedSeconds: Double?
         var lastObservedSeconds: Double?
+        var firstResponseMs: Int?
+        var firstResponseDeltaSeconds: Double?
         var latencyCount = 0
         var totalLatencyMs = 0
         var maxLatencyMs = 0
@@ -73,22 +117,45 @@ final class VideoPlayerViewModel: NSObject {
 
         mutating func recordRequest(seconds: Double, issuedAt: CFAbsoluteTime) {
             requestCount += 1
+            if firstRequestIssuedAt == nil {
+                firstRequestIssuedAt = issuedAt
+            }
             lastRequestIssuedAt = issuedAt
             lastRequestedSeconds = seconds
         }
 
-        mutating func recordObservation(seconds: Double, observedAt: CFAbsoluteTime) {
+        mutating func recordObservation(seconds: Double, observedAt: CFAbsoluteTime) -> (responseMs: Int, deltaSeconds: Double)? {
             lastObservedSeconds = seconds
+            let firstResponse = recordFirstResponseIfNeeded(seconds: seconds, observedAt: observedAt)
 
             guard let lastRequestIssuedAt,
                   let lastRequestedSeconds,
-                  abs(seconds - lastRequestedSeconds) <= 1.0 else { return }
+                  abs(seconds - lastRequestedSeconds) <= 1.0 else { return firstResponse }
 
             let latencyMs = max(0, Int((observedAt - lastRequestIssuedAt) * 1000))
             latencyCount += 1
             totalLatencyMs += latencyMs
             maxLatencyMs = max(maxLatencyMs, latencyMs)
             self.lastRequestIssuedAt = nil
+            return firstResponse
+        }
+
+        private mutating func recordFirstResponseIfNeeded(
+            seconds: Double,
+            observedAt: CFAbsoluteTime
+        ) -> (responseMs: Int, deltaSeconds: Double)? {
+            guard firstResponseMs == nil,
+                  let firstRequestIssuedAt,
+                  requestCount > 0 else { return nil }
+
+            let movedFromStart = abs(seconds - startedPlaybackSeconds)
+            let reachedLastRequest = lastRequestedSeconds.map { abs(seconds - $0) <= 1.0 } ?? false
+            guard movedFromStart >= 0.5 || reachedLastRequest else { return nil }
+
+            let responseMs = max(0, Int((observedAt - firstRequestIssuedAt) * 1000))
+            firstResponseMs = responseMs
+            firstResponseDeltaSeconds = movedFromStart
+            return (responseMs, movedFromStart)
         }
     }
 
@@ -96,6 +163,8 @@ final class VideoPlayerViewModel: NSObject {
     private var streamingServer: SMBStreamingServer?
     private var streamClient: SMB2Manager?
     private var streamInput: SMBRangeInputStream?
+    private var avController: AVPlayerVideoController?
+    private var avStreamClient: SMB2Manager?
 #endif
 
     init(
@@ -145,10 +214,17 @@ final class VideoPlayerViewModel: NSObject {
         let client = streamClient
         streamClient = nil
         Task { try? await client?.disconnectShare() }
+        tearDownAVPlayer()
 #endif
     }
 
     func togglePlayPause() {
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            avController?.togglePlayPause()
+            return
+        }
+#endif
         if player.isPlaying {
             pausePlayback(trigger: "toggle")
         } else {
@@ -158,15 +234,33 @@ final class VideoPlayerViewModel: NSObject {
 
     func toggleMute() {
         isMuted.toggle()
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            avController?.setMuted(isMuted)
+            return
+        }
+#endif
         player.audio?.isMuted = isMuted
     }
 
     func skip(seconds: Double) {
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            avController?.skip(seconds: seconds)
+            return
+        }
+#endif
         let newMs = Int32(max(0, currentPositionSeconds + seconds) * 1000)
         player.time = VLCTime(int: newMs)
     }
 
     func seek(to seconds: Double) {
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            avController?.seek(toSeconds: seconds)
+            return
+        }
+#endif
         let ms = Int32(max(0, seconds) * 1000)
         player.time = VLCTime(int: ms)
     }
@@ -178,6 +272,17 @@ final class VideoPlayerViewModel: NSObject {
             isInteractiveSeeking = true
             beginInteractiveSeekDiagnostics(startedSeconds: clamped)
         }
+
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            scheduleScrubPreview()
+            return
+        }
+#endif
+
+        guard shouldPreviewInteractiveSeekDuringDrag else {
+            return
+        }
         scheduleInteractiveSeekPreview()
     }
 
@@ -185,6 +290,9 @@ final class VideoPlayerViewModel: NSObject {
         guard isInteractiveSeeking else { return }
         interactiveSeekPreviewTask?.cancel()
         interactiveSeekPreviewTask = nil
+        scrubPreviewTask?.cancel()
+        scrubPreviewTask = nil
+        scrubPreviewImage = nil
         if let pendingInteractiveSeekSeconds {
             recordInteractiveSeekRequest(seconds: pendingInteractiveSeekSeconds)
             interactiveSeekDiagnostics?.finalRequestedSeconds = pendingInteractiveSeekSeconds
@@ -199,7 +307,7 @@ final class VideoPlayerViewModel: NSObject {
     private func scheduleInteractiveSeekPreview() {
         guard interactiveSeekPreviewTask == nil else { return }
         interactiveSeekPreviewTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(for: .milliseconds(VideoPlayerInteractiveSeekPolicy.previewIntervalMilliseconds))
             guard !Task.isCancelled else { return }
             self?.applyInteractiveSeekPreview()
         }
@@ -210,10 +318,46 @@ final class VideoPlayerViewModel: NSObject {
         guard isInteractiveSeeking,
               let pendingInteractiveSeekSeconds else { return }
 
-        if lastInteractiveSeekPreviewSeconds.map({ abs($0 - pendingInteractiveSeekSeconds) > 0.25 }) ?? true {
+        let minimumDelta = VideoPlayerInteractiveSeekPolicy.minimumPreviewDeltaSeconds
+        if lastInteractiveSeekPreviewSeconds.map({ abs($0 - pendingInteractiveSeekSeconds) > minimumDelta }) ?? true {
             recordInteractiveSeekRequest(seconds: pendingInteractiveSeekSeconds)
             seek(to: pendingInteractiveSeekSeconds)
             lastInteractiveSeekPreviewSeconds = pendingInteractiveSeekSeconds
+        }
+    }
+
+#if !targetEnvironment(simulator)
+    /// AVPlayer 経路の drag 中スクラブ。実 seek せず、最新ドラッグ位置のキーフレーム画像を表示する。
+    /// 1枚生成するたびにタスクを空けて、ドラッグ中は約100ms間隔で最新位置を取り直す。
+    private func scheduleScrubPreview() {
+        guard scrubPreviewTask == nil else { return }
+        scrubPreviewTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled else { return }
+            await self?.generateScrubPreview()
+        }
+    }
+
+    private func generateScrubPreview() async {
+        scrubPreviewTask = nil
+        guard isInteractiveSeeking,
+              let seconds = pendingInteractiveSeekSeconds,
+              let controller = avController else { return }
+        let image = await controller.generateThumbnail(atSeconds: seconds)
+        guard isInteractiveSeeking, let image else { return }
+        scrubPreviewImage = image
+    }
+#endif
+
+    private var shouldPreviewInteractiveSeekDuringDrag: Bool {
+        switch startupPlaybackPath {
+        case .directSMB:
+            return VideoPlayerInteractiveSeekPolicy.directSMBPreviewEnabled
+        case .avPlayer:
+            // AVPlayer 経路は drag 中にライブ seek せず、サムネイルスクラブ（2c）で追従させる。
+            return false
+        case .smbStream, .httpProxy, nil:
+            return true
         }
     }
 
@@ -222,9 +366,10 @@ final class VideoPlayerViewModel: NSObject {
         interactiveSeekDiagnosticsFinalizeTask = nil
         interactiveSeekDiagnostics = InteractiveSeekDiagnostics(
             startedAt: CFAbsoluteTimeGetCurrent(),
-            startedSeconds: startedSeconds
+            startedPlaybackSeconds: currentPositionSeconds,
+            startedRequestSeconds: startedSeconds
         )
-        print("[SeekDiag] begin | startedSeconds: \(String(format: "%.2f", startedSeconds)) | playerID: \(playerID) | file: \(item.name)")
+        print("[SeekDiag] begin | playbackSeconds: \(String(format: "%.2f", currentPositionSeconds)) | requestSeconds: \(String(format: "%.2f", startedSeconds)) | playerID: \(playerID) | file: \(item.name)")
     }
 
     private func recordInteractiveSeekRequest(seconds: Double) {
@@ -237,10 +382,13 @@ final class VideoPlayerViewModel: NSObject {
 
     private func recordInteractiveSeekObservation(seconds: Double) {
         guard interactiveSeekDiagnostics != nil else { return }
-        interactiveSeekDiagnostics?.recordObservation(
+        let firstResponse = interactiveSeekDiagnostics?.recordObservation(
             seconds: seconds,
             observedAt: CFAbsoluteTimeGetCurrent()
         )
+        if let firstResponse {
+            print("[SeekDiag] firstResponse | responseMs: \(firstResponse.responseMs) | deltaSeconds: \(String(format: "%.2f", firstResponse.deltaSeconds)) | observedSeconds: \(String(format: "%.2f", seconds)) | playerID: \(playerID) | file: \(item.name)")
+        }
     }
 
     private func markInteractiveSeekBuffering() {
@@ -267,11 +415,13 @@ final class VideoPlayerViewModel: NSObject {
         let avgLatencyMs = diagnostics.latencyCount > 0
             ? diagnostics.totalLatencyMs / diagnostics.latencyCount
             : -1
-        let finalRequestedSeconds = diagnostics.finalRequestedSeconds ?? diagnostics.lastRequestedSeconds ?? diagnostics.startedSeconds
+        let finalRequestedSeconds = diagnostics.finalRequestedSeconds ?? diagnostics.lastRequestedSeconds ?? diagnostics.startedRequestSeconds
         let finalObservedSeconds = diagnostics.lastObservedSeconds ?? currentPositionSeconds
         let finalDeltaSeconds = abs(finalObservedSeconds - finalRequestedSeconds)
-        let line = "[SeekDiag] summary | dragMs: \(dragMs) | seekRequests: \(diagnostics.requestCount) | latencyCount: \(diagnostics.latencyCount) | avgLatencyMs: \(avgLatencyMs) | maxLatencyMs: \(diagnostics.maxLatencyMs) | bufferingDuringSeek: \(diagnostics.bufferingDuringSeek) | finalRequestedSeconds: \(String(format: "%.2f", finalRequestedSeconds)) | finalObservedSeconds: \(String(format: "%.2f", finalObservedSeconds)) | finalDeltaSeconds: \(String(format: "%.2f", finalDeltaSeconds)) | playerID: \(playerID) | file: \(item.name)"
-        let telemetryLine = "[SeekDiag] summary | dragMs: \(dragMs) | seekRequests: \(diagnostics.requestCount) | latencyCount: \(diagnostics.latencyCount) | avgLatencyMs: \(avgLatencyMs) | maxLatencyMs: \(diagnostics.maxLatencyMs) | bufferingDuringSeek: \(diagnostics.bufferingDuringSeek) | finalRequestedSeconds: \(String(format: "%.2f", finalRequestedSeconds)) | finalObservedSeconds: \(String(format: "%.2f", finalObservedSeconds)) | finalDeltaSeconds: \(String(format: "%.2f", finalDeltaSeconds)) | playerID: \(playerID)"
+        let firstResponseMs = diagnostics.firstResponseMs ?? -1
+        let firstResponseDeltaSeconds = diagnostics.firstResponseDeltaSeconds ?? -1
+        let line = "[SeekDiag] summary | dragMs: \(dragMs) | seekRequests: \(diagnostics.requestCount) | firstResponseMs: \(firstResponseMs) | firstResponseDeltaSeconds: \(String(format: "%.2f", firstResponseDeltaSeconds)) | latencyCount: \(diagnostics.latencyCount) | avgLatencyMs: \(avgLatencyMs) | maxLatencyMs: \(diagnostics.maxLatencyMs) | bufferingDuringSeek: \(diagnostics.bufferingDuringSeek) | finalRequestedSeconds: \(String(format: "%.2f", finalRequestedSeconds)) | finalObservedSeconds: \(String(format: "%.2f", finalObservedSeconds)) | finalDeltaSeconds: \(String(format: "%.2f", finalDeltaSeconds)) | playerID: \(playerID) | file: \(item.name)"
+        let telemetryLine = "[SeekDiag] summary | dragMs: \(dragMs) | seekRequests: \(diagnostics.requestCount) | firstResponseMs: \(firstResponseMs) | firstResponseDeltaSeconds: \(String(format: "%.2f", firstResponseDeltaSeconds)) | latencyCount: \(diagnostics.latencyCount) | avgLatencyMs: \(avgLatencyMs) | maxLatencyMs: \(diagnostics.maxLatencyMs) | bufferingDuringSeek: \(diagnostics.bufferingDuringSeek) | finalRequestedSeconds: \(String(format: "%.2f", finalRequestedSeconds)) | finalObservedSeconds: \(String(format: "%.2f", finalObservedSeconds)) | finalDeltaSeconds: \(String(format: "%.2f", finalDeltaSeconds)) | playerID: \(playerID)"
         print(line)
         FirebaseSupport.logCrashlytics(telemetryLine)
     }
@@ -279,7 +429,7 @@ final class VideoPlayerViewModel: NSObject {
     // MARK: - 視聴履歴保存
 
     func saveWatchPosition(capturesThumbnail: Bool = true) async {
-        let thumbnail = capturesThumbnail ? await MainActor.run { captureCurrentFrame() } : nil
+        let thumbnail = capturesThumbnail ? await captureThumbnailForHistory() : nil
         await playbackHistoryService.saveProgress(
             source: .remote(connection.id),
             connection: connection,
@@ -305,16 +455,34 @@ final class VideoPlayerViewModel: NSObject {
 
     func markDrawableReady() {
         isDrawableReady = true
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            avController?.markDrawableReady()
+            return
+        }
+#endif
         playIfReady(trigger: "drawable_ready")
     }
 
     func pausePlayback(trigger: String) {
         print("[VideoPlayer] pause | trigger: \(trigger) | playerID: \(playerID) | file: \(item.name)")
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            avController?.pause()
+            return
+        }
+#endif
         player.pause()
     }
 
     func stopPlayback(trigger: String) {
         print("[VideoPlayer] stop | trigger: \(trigger) | playerID: \(playerID) | file: \(item.name)")
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            avController?.pause()
+            return
+        }
+#endif
         player.stop()
     }
 
@@ -339,6 +507,7 @@ final class VideoPlayerViewModel: NSObject {
         let client = streamClient
         streamClient = nil
         Task { try? await client?.disconnectShare() }
+        tearDownAVPlayer()
 #endif
         startupPlaybackPath = nil
         didFallbackToProxy = false
@@ -347,6 +516,9 @@ final class VideoPlayerViewModel: NSObject {
         currentStartupStartPositionSeconds = 0
         interactiveSeekPreviewTask?.cancel()
         interactiveSeekPreviewTask = nil
+        scrubPreviewTask?.cancel()
+        scrubPreviewTask = nil
+        scrubPreviewImage = nil
         interactiveSeekDiagnosticsFinalizeTask?.cancel()
         interactiveSeekDiagnosticsFinalizeTask = nil
         interactiveSeekDiagnostics = nil
@@ -355,6 +527,18 @@ final class VideoPlayerViewModel: NSObject {
         hasObservedPlayableTimeline = false
         didLogStartupBufferingBeforeTimeline = false
         print("[VideoPlayer] teardown end | trigger: \(trigger) | playerID: \(playerID) | file: \(item.name)")
+    }
+
+    private func captureThumbnailForHistory() async -> Data? {
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            guard let image = await avController?.generateThumbnail(atSeconds: currentPositionSeconds) else {
+                return nil
+            }
+            return await MainActor.run { cropTo16x9(image)?.jpegData(compressionQuality: 0.5) }
+        }
+#endif
+        return await MainActor.run { captureCurrentFrame() }
     }
 
     private func captureCurrentFrame() -> Data? {
@@ -406,7 +590,14 @@ final class VideoPlayerViewModel: NSObject {
         resetStartupDiagnostics()
         logStartupDiag(event: "begin")
 #if !targetEnvironment(simulator)
-        setupMediaOnDevice(startPositionSeconds: startPositionSeconds)
+        if Self.isAVPlayerEligible(item) {
+            startupPlaybackPath = .avPlayer
+            setupTask = Task { [weak self] in
+                await self?.prepareAVPlayerMedia(startPositionSeconds: startPositionSeconds)
+            }
+        } else {
+            setupMediaOnDevice(startPositionSeconds: startPositionSeconds)
+        }
 #else
         setupMediaDirect(startPositionSeconds: startPositionSeconds)
 #endif
@@ -419,6 +610,251 @@ final class VideoPlayerViewModel: NSObject {
         guard let url = buildSMBURL() else {
             errorMessage = "メディアURLの構築に失敗しました"
             print("[VideoPlayer] Failed to build direct SMB URL | playerID: \(playerID) | file: \(item.name) | path: \(item.path)")
+            return
+        }
+        attachDirectSMBMedia(url: url, startPositionSeconds: startPositionSeconds)
+    }
+
+    private func prepareAVPlayerMedia(startPositionSeconds: Double) async {
+        do {
+            let credential = try smbClientManager.loadCredential(for: connection)
+            let shareName = credential.shareName == "/" ? "" : credential.shareName
+            let client = try smbClientManager.makeDedicatedClient(for: connection)
+            try await client.connectShare(name: shareName)
+
+            let resolvedPath = await resolveSMBStreamPath(client: client, path: item.path)
+            let fileSize = try await resolveSMBStreamFileSize(client: client, path: resolvedPath)
+
+            if Task.isCancelled {
+                try? await client.disconnectShare()
+                return
+            }
+
+            let dataSource = SMBByteRangeDataSource(
+                client: client,
+                path: resolvedPath,
+                fileSize: fileSize,
+                ownerID: playerID
+            )
+
+            await MainActor.run {
+                self.attachAVPlayerMedia(
+                    client: client,
+                    dataSource: dataSource,
+                    startPositionSeconds: startPositionSeconds
+                )
+            }
+        } catch {
+            await MainActor.run {
+                print("[VideoPlayer] AVPlayer setup failed; fallback to direct SMB | playerID: \(self.playerID) | file: \(self.item.name) | error: \(error)")
+                self.fallbackToDirectSMBAfterHTTPProxyFailure(
+                    startPositionSeconds: startPositionSeconds,
+                    error: error
+                )
+            }
+        }
+    }
+
+    private func attachAVPlayerMedia(
+        client: SMB2Manager,
+        dataSource: ByteRangeDataSource,
+        startPositionSeconds: Double
+    ) {
+        currentStartupStartPositionSeconds = startPositionSeconds
+        hasObservedPlayableTimeline = false
+        didLogStartupBufferingBeforeTimeline = false
+        lastObservedPlaybackTimeMs = nil
+        startupPlaybackPath = .avPlayer
+        setupTask = nil
+
+        // VLC / stream 系のリソースが残っていれば片付ける。
+        streamingServer?.stop()
+        streamingServer = nil
+        streamInput?.close()
+        streamInput = nil
+        let oldStreamClient = streamClient
+        streamClient = nil
+        Task { try? await oldStreamClient?.disconnectShare() }
+
+        avStreamClient = client
+        let contentType = Self.avContentType(for: item)
+        let controller = AVPlayerVideoController(
+            dataSource: dataSource,
+            contentType: contentType,
+            fileName: item.name,
+            startPositionSeconds: startPositionSeconds,
+            ownerID: playerID
+        )
+        wireAVController(controller)
+        avController = controller
+        avPlayer = controller.player
+        usesAVPlayer = true
+        controller.setMuted(isMuted)
+        controller.load()
+
+        mediaAttachedAt = CFAbsoluteTimeGetCurrent()
+        logStartupDiag(
+            event: "media_attached",
+            extra: "path: av_player | contentType: \(contentType) | startPosition: \(startPositionSeconds)"
+        )
+        if isDrawableReady {
+            controller.markDrawableReady()
+        }
+    }
+
+    private func wireAVController(_ controller: AVPlayerVideoController) {
+        controller.onTimeChanged = { [weak self] seconds in
+            guard let self else { return }
+            self.currentPositionSeconds = seconds
+            self.recordInteractiveSeekObservation(seconds: seconds)
+            if seconds > 0 {
+                self.hasObservedPlayableTimeline = true
+            }
+        }
+        controller.onDurationChanged = { [weak self] duration in
+            self?.durationSeconds = duration
+        }
+        controller.onBufferingChanged = { [weak self] buffering in
+            guard let self else { return }
+            if buffering {
+                self.markInteractiveSeekBuffering()
+            }
+            self.updateAVBuffering(buffering)
+        }
+        controller.onPlayingChanged = { [weak self] playing in
+            guard let self else { return }
+            self.isPlaying = playing
+            if playing {
+                self.hasEverStartedPlaying = true
+                self.updateAVBuffering(false)
+            }
+        }
+        controller.onFailed = { [weak self] error in
+            guard let self, !self.isTearingDownPlayback else { return }
+            self.errorMessage = "再生エラーが発生しました"
+            print("[VideoPlayer] AVPlayer error | playerID: \(self.playerID) | file: \(self.item.name) | error: \(String(describing: error))")
+        }
+    }
+
+    private func tearDownAVPlayer() {
+        guard avController != nil || avStreamClient != nil else { return }
+        avBufferingDebounceTask?.cancel()
+        avBufferingDebounceTask = nil
+        avController?.tearDown()
+        avController = nil
+        avPlayer = nil
+        usesAVPlayer = false
+        let client = avStreamClient
+        avStreamClient = nil
+        Task { try? await client?.disconnectShare() }
+    }
+
+    /// AVPlayer の buffering をデバウンスしてスピナーの点滅を抑える。
+    private func updateAVBuffering(_ buffering: Bool) {
+        avBufferingDebounceTask?.cancel()
+        avBufferingDebounceTask = nil
+        guard buffering else {
+            isBuffering = false
+            return
+        }
+        avBufferingDebounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled, let self else { return }
+            // drag 中はスクラブ画像を見せるのでスピナーは出さない。
+            guard !self.isInteractiveSeeking else { return }
+            self.isBuffering = true
+        }
+    }
+
+    private func prepareHTTPProxyMedia(startPositionSeconds: Double) async {
+        do {
+            let credential = try smbClientManager.loadCredential(for: connection)
+            let shareName = credential.shareName == "/" ? "" : credential.shareName
+            let client = try smbClientManager.makeDedicatedClient(for: connection)
+            try await client.connectShare(name: shareName)
+
+            let server = SMBStreamingServer(ownerID: playerID)
+            try await server.start(client: client, filePath: item.path, fileSize: item.size)
+
+            guard let localURL = server.localURL else {
+                server.stop()
+                throw NSError(domain: "VideoPlayer", code: 10, userInfo: [
+                    NSLocalizedDescriptionKey: "HTTP proxy URL is missing"
+                ])
+            }
+
+            if Task.isCancelled {
+                server.stop()
+                return
+            }
+
+            await MainActor.run {
+                self.attachHTTPProxyMedia(
+                    server: server,
+                    localURL: localURL,
+                    startPositionSeconds: startPositionSeconds
+                )
+            }
+        } catch {
+            await MainActor.run {
+                self.fallbackToDirectSMBAfterHTTPProxyFailure(
+                    startPositionSeconds: startPositionSeconds,
+                    error: error
+                )
+            }
+        }
+    }
+
+    private func attachHTTPProxyMedia(
+        server: SMBStreamingServer,
+        localURL: URL,
+        startPositionSeconds: Double
+    ) {
+        currentStartupStartPositionSeconds = startPositionSeconds
+        hasObservedPlayableTimeline = false
+        didLogStartupBufferingBeforeTimeline = false
+        lastObservedPlaybackTimeMs = nil
+        startupPlaybackPath = .httpProxy
+        setupTask = nil
+
+        streamingServer?.stop()
+        streamingServer = server
+        streamInput?.close()
+        streamInput = nil
+        let oldClient = streamClient
+        streamClient = nil
+        Task { try? await oldClient?.disconnectShare() }
+
+        let networkCaching = 300
+        let fileCaching = 300
+        print("[VideoPlayer] Using HTTP proxy v2: \(localURL.absoluteString) | startPosition: \(startPositionSeconds)s | playerID: \(playerID) | file: \(item.name)")
+        let media = VLCMedia(url: localURL)
+        media.delegate = self
+        media.addOption(":network-caching=\(networkCaching)")
+        media.addOption(":file-caching=\(fileCaching)")
+        media.addOption(":input-fast-seek")
+        if startPositionSeconds > 0 {
+            media.addOption(":start-time=\(Int(startPositionSeconds))")
+        }
+        media.parse(options: .parseNetwork, timeout: 10000)
+        player.media = media
+        proxyReadyAt = CFAbsoluteTimeGetCurrent()
+        mediaAttachedAt = proxyReadyAt
+        logStartupDiag(
+            event: "media_attached",
+            extra: "path: http_proxy_v2 | networkCaching: \(networkCaching) | fileCaching: \(fileCaching) | parse: network_timeout_10000 | startPosition: \(startPositionSeconds)"
+        )
+        if isDrawableReady {
+            playIfReady(trigger: "http_proxy_ready")
+        }
+    }
+
+    private func fallbackToDirectSMBAfterHTTPProxyFailure(startPositionSeconds: Double, error: Error) {
+        setupTask = nil
+        print("[VideoPlayer] HTTP proxy setup failed; fallback to direct SMB | playerID: \(playerID) | file: \(item.name) | error: \(error)")
+        guard let url = buildSMBURL() else {
+            errorMessage = "メディアURLの構築に失敗しました"
+            print("[VideoPlayer] Failed to build fallback SMB URL | playerID: \(playerID) | file: \(item.name) | path: \(item.path)")
             return
         }
         attachDirectSMBMedia(url: url, startPositionSeconds: startPositionSeconds)
@@ -439,8 +875,9 @@ final class VideoPlayerViewModel: NSObject {
         Task { try? await oldClient?.disconnectShare() }
 
         let sanitizedURL = sanitizeURL(url)
-        let networkCaching = directSMBNetworkCaching(for: item.size)
-        let smbCaching = directSMBInputCaching(for: item.size)
+        let cachingPolicy = VideoPlayerCachingPolicy.directSMB(fileSize: item.size)
+        let networkCaching = cachingPolicy.networkCachingMilliseconds
+        let smbCaching = cachingPolicy.inputCachingMilliseconds
         print("[VideoPlayer] Using direct SMB: \(sanitizedURL) | startPosition: \(startPositionSeconds)s | startupRetry: \(directSMBStartupRetryCount) | playerID: \(playerID) | file: \(item.name)")
         let media = VLCMedia(url: url)
         media.delegate = self
@@ -448,6 +885,8 @@ final class VideoPlayerViewModel: NSObject {
         media.addOption(":smb-caching=\(smbCaching)")
         media.addOption(":file-caching=\(smbCaching)")
         media.addOption(":input-fast-seek")
+        // 重い HEVC / 4K でソフトデコードに落ちて停止しないよう VideoToolbox を明示する
+        media.addOption(":avcodec-hw=videotoolbox")
         if let credential = try? smbClientManager.loadCredential(for: connection) {
             if !credential.username.isEmpty {
                 media.addOption(":smb-user=\(credential.username)")
@@ -464,7 +903,7 @@ final class VideoPlayerViewModel: NSObject {
         mediaAttachedAt = CFAbsoluteTimeGetCurrent()
         logStartupDiag(
             event: "media_attached",
-            extra: "path: direct_smb | networkCaching: \(networkCaching) | smbCaching: \(smbCaching) | fileCaching: \(smbCaching) | parse: network_timeout_10000 | startPosition: \(startPositionSeconds) | startupRetry: \(directSMBStartupRetryCount)"
+            extra: "path: direct_smb | networkCaching: \(networkCaching) | smbCaching: \(smbCaching) | fileCaching: \(smbCaching) | hwDecode: videotoolbox | parse: network_timeout_10000 | startPosition: \(startPositionSeconds) | startupRetry: \(directSMBStartupRetryCount)"
         )
         if isDrawableReady {
             playIfReady(trigger: "direct_smb_ready")
@@ -574,7 +1013,7 @@ final class VideoPlayerViewModel: NSObject {
         streamInput = stream
         streamClient = client
 
-        let inputCaching = directSMBInputCaching(for: Int64(fileSize))
+        let inputCaching = VideoPlayerCachingPolicy.directSMB(fileSize: Int64(fileSize)).inputCachingMilliseconds
         print("[VideoPlayer] Using SMB stream | playerID: \(playerID) | file: \(item.name) | path: \(resolvedPath) | size: \(fileSize)")
         let media = VLCMedia(stream: stream)
         media.delegate = self
@@ -690,12 +1129,21 @@ final class VideoPlayerViewModel: NSObject {
         return components.url
     }
 
-    private func directSMBNetworkCaching(for fileSize: Int64?) -> Int {
-        500
+    /// AVPlayer + ResourceLoader で再生する形式かどうか。MP4 系は AVPlayer、その他は VLC に委ねる。
+    private static func isAVPlayerEligible(_ item: DirectoryItem) -> Bool {
+        let ext = (item.name as NSString).pathExtension.lowercased()
+        return ["mp4", "m4v", "mov"].contains(ext)
     }
 
-    private func directSMBInputCaching(for fileSize: Int64?) -> Int {
-        3000
+    private static func avContentType(for item: DirectoryItem) -> String {
+        switch (item.name as NSString).pathExtension.lowercased() {
+        case "mov":
+            return AVFileType.mov.rawValue
+        case "m4v":
+            return "com.apple.m4v-video"
+        default:
+            return AVFileType.mp4.rawValue
+        }
     }
 
     private func resetStartupDiagnostics() {
@@ -911,6 +1359,8 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
             return "smb_stream"
         case .httpProxy:
             return "http_proxy"
+        case .avPlayer:
+            return "av_player"
         case nil:
             return "none"
         }

@@ -97,11 +97,28 @@ struct VideoPlayerView: View {
                         viewModel.toggleMute()
                     }
                 ) {
-                    VLCPlayerView(player: viewModel.player) {
-                        viewModel.markDrawableReady()
+                    if viewModel.usesAVPlayer, let avPlayer = viewModel.avPlayer {
+                        AVPlayerLayerView(player: avPlayer) {
+                            viewModel.markDrawableReady()
+                        }
+                            .id(viewModel.playerID)
+                            .overlay {
+                                if let preview = viewModel.scrubPreviewImage {
+                                    Image(uiImage: preview)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        .background(Color.black)
+                                }
+                            }
+                            .ignoresSafeArea()
+                    } else {
+                        VLCPlayerView(player: viewModel.player) {
+                            viewModel.markDrawableReady()
+                        }
+                            .id(viewModel.playerID)
+                            .ignoresSafeArea()
                     }
-                        .id(viewModel.playerID)
-                        .ignoresSafeArea()
                 }
                 .overlay {
                     if viewModel.isBuffering {

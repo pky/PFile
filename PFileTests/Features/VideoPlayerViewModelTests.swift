@@ -96,4 +96,26 @@ final class VideoPlayerViewModelTests: XCTestCase {
 
         XCTAssertTrue(mockRepository.upsertedCalls.isEmpty)
     }
+
+    // MARK: - VideoPlayerCachingPolicy
+
+    func test_directSMBCachingPolicy_keepsSmallFilesResponsive() {
+        let policy = VideoPlayerCachingPolicy.directSMB(fileSize: 1_000_000)
+
+        XCTAssertEqual(policy.networkCachingMilliseconds, 500)
+        XCTAssertEqual(policy.inputCachingMilliseconds, 3000)
+    }
+
+    func test_directSMBCachingPolicy_increasesBufferForHeavyFiles() {
+        let policy = VideoPlayerCachingPolicy.directSMB(fileSize: 8 * 1024 * 1024 * 1024)
+
+        XCTAssertEqual(policy.networkCachingMilliseconds, 1000)
+        XCTAssertEqual(policy.inputCachingMilliseconds, 6000)
+    }
+
+    func test_interactiveSeekPolicy_keepsDirectSMBPreviewDisabled() {
+        XCTAssertFalse(VideoPlayerInteractiveSeekPolicy.directSMBPreviewEnabled)
+        XCTAssertEqual(VideoPlayerInteractiveSeekPolicy.previewIntervalMilliseconds, 300)
+        XCTAssertEqual(VideoPlayerInteractiveSeekPolicy.minimumPreviewDeltaSeconds, 0.25)
+    }
 }

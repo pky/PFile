@@ -24,8 +24,10 @@ final class SMBStreamingServer {
     private var activeTasks: [Int: Task<Void, Never>] = [:]
 
     private let queue = DispatchQueue(label: "jp.pky.pfile.smb-streaming", qos: .userInitiated)
-    // 初動の SMB 往復回数を減らしつつ、極端な一括読み込みは避ける
+    // 通常再生は大きめ、seek 直後は小さめのチャンクにして古い読み込みを捨てやすくする。
     private let maxChunkSize: UInt64 = 2 * 1024 * 1024 // 2MB
+    private let seekHeadChunkSize: UInt64 = 256 * 1024 // 256KB
+    private let seekFollowupChunkSize: UInt64 = 512 * 1024 // 512KB
 
     init(ownerID: String = "unknown") {
         self.ownerID = ownerID
@@ -167,6 +169,9 @@ final class SMBStreamingServer {
         case "HEAD":
             sendHead(on: connection, requestID: requestID)
         case "GET":
+            if let byteRange {
+                cancelOlderRangeRequests(newRequestID: requestID, newRange: byteRange)
+            }
             let task: Task<Void, Never> = Task { [weak self] in
                 guard let self else { return }
                 await self.sendGet(range: byteRange, on: connection, requestID: requestID)
@@ -208,9 +213,11 @@ final class SMBStreamingServer {
             }
 
             var lowerBound = bodyRange.lowerBound
+            var isFirstChunk = true
             while lowerBound <= bodyRange.upperBound {
                 try Task.checkCancellation()
-                let upperBound = min(bodyRange.upperBound, lowerBound + maxChunkSize - 1)
+                let chunkSize = readChunkSize(for: bodyRange, isFirstChunk: isFirstChunk)
+                let upperBound = min(bodyRange.upperBound, lowerBound + chunkSize - 1)
                 let chunkRange = lowerBound...upperBound
 
                 activeReadCount += 1
@@ -222,6 +229,7 @@ final class SMBStreamingServer {
                 try Task.checkCancellation()
                 try await sendBytes(data, on: connection)
                 lowerBound = upperBound + 1
+                isFirstChunk = false
             }
 
             completeRequest(on: connection, requestID: requestID, reason: "body_sent")
@@ -304,6 +312,32 @@ Connection: close\r
     private func makeRequestID() -> Int {
         nextRequestID += 1
         return nextRequestID
+    }
+
+    private func cancelOlderRangeRequests(newRequestID: Int, newRange: ClosedRange<UInt64>) {
+        let olderRequestIDs = activeTasks.keys.filter { $0 != newRequestID }
+        guard !olderRequestIDs.isEmpty else { return }
+
+        print("[SMBStreamingServer] playerID: \(ownerID) | request[\(newRequestID)] prioritizing latest Range: \(newRange) | cancelling: \(olderRequestIDs)")
+        for requestID in olderRequestIDs {
+            activeTasks[requestID]?.cancel()
+            if let connection = activeConnections[requestID] {
+                finishRequest(connection, requestID: requestID, reason: "superseded_by_latest_range")
+            } else {
+                activeTasks.removeValue(forKey: requestID)
+            }
+        }
+    }
+
+    private func readChunkSize(for bodyRange: ClosedRange<UInt64>, isFirstChunk: Bool) -> UInt64 {
+        let bodyLength = bodyRange.upperBound - bodyRange.lowerBound + 1
+        if isFirstChunk {
+            return min(seekHeadChunkSize, bodyLength)
+        }
+        if bodyLength <= 8 * 1024 * 1024 {
+            return seekFollowupChunkSize
+        }
+        return maxChunkSize
     }
 
     private func reportOverlapDetected(
