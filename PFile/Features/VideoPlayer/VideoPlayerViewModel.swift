@@ -60,6 +60,8 @@ final class VideoPlayerViewModel: NSObject {
     private var scrubPreviewTask: Task<Void, Never>?
     // 一瞬の buffering でスピナーを点滅させないためのデバウンス。
     private var avBufferingDebounceTask: Task<Void, Never>?
+    // シーク操作の開始時に再生中だったか。指を離したときの再開判定に使う。
+    private var wasPlayingBeforeInteractiveSeek = false
 
     private(set) var isBuffering = true
     private var hasEverStartedPlaying = false
@@ -270,6 +272,9 @@ final class VideoPlayerViewModel: NSObject {
         pendingInteractiveSeekSeconds = clamped
         if !isInteractiveSeeking {
             isInteractiveSeeking = true
+            // drag 中は音と映像がずれるので再生を止め、指を離したときに元の状態へ戻す。
+            wasPlayingBeforeInteractiveSeek = isPlaying
+            pauseForInteractiveSeek()
             beginInteractiveSeekDiagnostics(startedSeconds: clamped)
         }
 
@@ -301,7 +306,31 @@ final class VideoPlayerViewModel: NSObject {
         isInteractiveSeeking = false
         pendingInteractiveSeekSeconds = nil
         lastInteractiveSeekPreviewSeconds = nil
+        if wasPlayingBeforeInteractiveSeek {
+            resumeAfterInteractiveSeek()
+        }
+        wasPlayingBeforeInteractiveSeek = false
         finalizeInteractiveSeekDiagnosticsAfterDelay()
+    }
+
+    private func pauseForInteractiveSeek() {
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            avController?.pause()
+            return
+        }
+#endif
+        player.pause()
+    }
+
+    private func resumeAfterInteractiveSeek() {
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            avController?.play()
+            return
+        }
+#endif
+        playIfReady(trigger: "interactive_seek_end")
     }
 
     private func scheduleInteractiveSeekPreview() {
