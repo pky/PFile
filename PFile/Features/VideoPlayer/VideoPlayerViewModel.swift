@@ -62,6 +62,9 @@ final class VideoPlayerViewModel: NSObject {
     private var avBufferingDebounceTask: Task<Void, Never>?
     // シーク操作の開始時に再生中だったか。指を離したときの再開判定に使う。
     private var wasPlayingBeforeInteractiveSeek = false
+    // AVPlayer 経路でユーザーが再生を望んでいるかの意図。buffering で揺れる isPlaying と違い、
+    // 明示的な再生/一時停止だけで変わる。連続シーク中の再開判定をこの値で安定させる。
+    private var avIntendsToPlay = false
 
     private(set) var isBuffering = true
     private var hasEverStartedPlaying = false
@@ -223,6 +226,8 @@ final class VideoPlayerViewModel: NSObject {
     func togglePlayPause() {
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
+            // toggle 前の状態から再生意図を確定する。buffering 中の isPlaying には依存しない。
+            avIntendsToPlay = (avController?.isPaused ?? true)
             avController?.togglePlayPause()
             return
         }
@@ -273,7 +278,12 @@ final class VideoPlayerViewModel: NSObject {
         if !isInteractiveSeeking {
             isInteractiveSeeking = true
             // drag 中は音と映像がずれるので再生を止め、指を離したときに元の状態へ戻す。
+            // AVPlayer は buffering で isPlaying が揺れるため、安定した再生意図で判定する。
+#if !targetEnvironment(simulator)
+            wasPlayingBeforeInteractiveSeek = usesAVPlayer ? avIntendsToPlay : isPlaying
+#else
             wasPlayingBeforeInteractiveSeek = isPlaying
+#endif
             pauseForInteractiveSeek()
             beginInteractiveSeekDiagnostics(startedSeconds: clamped)
         }
@@ -298,6 +308,10 @@ final class VideoPlayerViewModel: NSObject {
         scrubPreviewTask?.cancel()
         scrubPreviewTask = nil
         scrubPreviewImage = nil
+#if !targetEnvironment(simulator)
+        // 進行中のスクラブ読み出しを切り、再開シークへ SMB セッションを即座に明け渡す。
+        avController?.cancelThumbnailGeneration()
+#endif
         if let pendingInteractiveSeekSeconds {
             recordInteractiveSeekRequest(seconds: pendingInteractiveSeekSeconds)
             interactiveSeekDiagnostics?.finalRequestedSeconds = pendingInteractiveSeekSeconds
@@ -359,22 +373,26 @@ final class VideoPlayerViewModel: NSObject {
     /// AVPlayer 経路の drag 中スクラブ。実 seek せず、最新ドラッグ位置のキーフレーム画像を表示する。
     /// 1枚生成するたびにタスクを空けて、ドラッグ中は約100ms間隔で最新位置を取り直す。
     private func scheduleScrubPreview() {
+        // 生成は常に1本だけ走らせる。ドラッグ中の重複生成が単一 SMB セッションを飽和させないよう、
+        // 走っている間は新規 schedule をはじき、完了時に最新位置だけ取り直す。
         guard scrubPreviewTask == nil else { return }
         scrubPreviewTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(100))
             guard !Task.isCancelled else { return }
-            await self?.generateScrubPreview()
+            await self?.runScrubPreviewLoop()
         }
     }
 
-    private func generateScrubPreview() async {
-        scrubPreviewTask = nil
-        guard isInteractiveSeeking,
-              let seconds = pendingInteractiveSeekSeconds,
-              let controller = avController else { return }
-        let image = await controller.generateThumbnail(atSeconds: seconds)
-        guard isInteractiveSeeking, let image else { return }
-        scrubPreviewImage = image
+    private func runScrubPreviewLoop() async {
+        defer { scrubPreviewTask = nil }
+        // 生成中に指が動いた場合だけ最新位置で取り直す。同じ位置なら抜ける。
+        while isInteractiveSeeking, let seconds = pendingInteractiveSeekSeconds,
+              let controller = avController {
+            let image = await controller.generateThumbnail(atSeconds: seconds)
+            guard isInteractiveSeeking else { return }
+            if let image { scrubPreviewImage = image }
+            if pendingInteractiveSeekSeconds == seconds { return }
+        }
     }
 #endif
 
@@ -755,6 +773,8 @@ final class VideoPlayerViewModel: NSObject {
             self.isPlaying = playing
             if playing {
                 self.hasEverStartedPlaying = true
+                // 実際に再生が始まったら意図も再生中で確定する（初回自動再生・再開の両方を拾う）。
+                self.avIntendsToPlay = true
                 self.updateAVBuffering(false)
             }
         }

@@ -4,8 +4,6 @@ use_frameworks!
 target 'PFile' do
   pod 'MobileVLCKit'
   pod 'Google-Mobile-Ads-SDK'
-  pod 'FirebaseAuth'
-  pod 'FirebaseFirestore'
   pod 'FirebaseCrashlytics'
   pod 'FirebaseAnalytics'
 

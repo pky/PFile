@@ -123,6 +123,10 @@ final class AVPlayerVideoController: @unchecked Sendable {
         player.pause()
     }
 
+    var isPaused: Bool {
+        player.timeControlStatus == .paused
+    }
+
     func togglePlayPause() {
         if player.timeControlStatus == .paused {
             play()
@@ -152,6 +156,12 @@ final class AVPlayerVideoController: @unchecked Sendable {
     }
 
     // MARK: - サムネイル
+
+    /// 進行中のサムネイル生成を中断し、共有 SMB セッションを再生側へ即座に返す。
+    /// drag を離したあとの再生再開が、古いスクラブ読み出しと競合して詰まるのを防ぐ。
+    func cancelThumbnailGeneration() {
+        imageGenerator?.cancelAllCGImageGeneration()
+    }
 
     /// 指定秒のフレーム画像を生成する。履歴サムネイルと drag スクラブの両方で使う。
     func generateThumbnail(atSeconds seconds: Double) async -> UIImage? {
