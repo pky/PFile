@@ -1,5 +1,7 @@
 # NAS 動画再生方式調査
 
+> 注記：これは調査段階のメモです。最終的な実装はこのドキュメントの結論と異なります。MP4/MOV系はAVPlayer（SMBResourceLoaderDelegate + AMSMB2によるバイト範囲読み込み）で再生し、VLCKitはMKVなど非対応フォーマットのフォールバックとして使用しています。
+
 ## 目的
 
 NAS 上の大きい動画ファイルを iPhone / iPad で安定して再生するため、PFile で採用する再生経路を整理する。
