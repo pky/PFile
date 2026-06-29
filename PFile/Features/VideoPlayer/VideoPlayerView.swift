@@ -143,6 +143,7 @@ struct VideoPlayerView: View {
         .onDisappear {
             if let vm = viewModel {
                 vm.cancelSetup()
+                viewModel = nil
                 Task {
                     await vm.saveWatchPosition()
                     vm.tearDownPlayback(trigger: "view_on_disappear")
@@ -265,13 +266,21 @@ private struct VLCPlayerView: UIViewRepresentable {
         notifyDrawableReady(context: context)
     }
 
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        if let player = coordinator.player, (player.drawable as? UIView) === uiView {
+            player.drawable = nil
+        }
+    }
+
     private func notifyDrawableReady(context: Context) {
         guard !context.coordinator.didNotifyDrawableReady else { return }
         context.coordinator.didNotifyDrawableReady = true
+        context.coordinator.player = player
         onDrawableReady()
     }
 
     final class Coordinator {
         var didNotifyDrawableReady = false
+        weak var player: VLCMediaPlayer?
     }
 }

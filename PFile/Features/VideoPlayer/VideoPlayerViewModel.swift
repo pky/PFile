@@ -186,6 +186,7 @@ final class VideoPlayerViewModel: NSObject {
         self.smbClientManager = smbClientManager
         super.init()
         player.delegate = self
+        VideoPlayerDiagnostics.playerDidInit(playerID: playerID)
         print("[VideoPlayer] init | playerID: \(playerID) | file: \(item.name)")
         setupMedia(startPositionSeconds: startPositionSeconds)
     }
@@ -193,6 +194,7 @@ final class VideoPlayerViewModel: NSObject {
     deinit {
         print("[VideoPlayer] deinit start | playerID: \(playerID) | file: \(item.name)")
         tearDownPlayback(trigger: "deinit")
+        VideoPlayerDiagnostics.playerDidDeinit(playerID: playerID)
         print("[VideoPlayer] deinit end | playerID: \(playerID) | file: \(item.name)")
     }
 
@@ -535,6 +537,7 @@ final class VideoPlayerViewModel: NSObject {
 
     func tearDownPlayback(trigger: String) {
         print("[VideoPlayer] teardown start | trigger: \(trigger) | playerID: \(playerID) | file: \(item.name)")
+        VideoPlayerDiagnostics.logMemory(event: "teardown_start_\(trigger)", playerID: playerID)
         isTearingDownPlayback = true
         startupFallbackTask?.cancel()
         startupFallbackTask = nil
@@ -573,6 +576,7 @@ final class VideoPlayerViewModel: NSObject {
         lastInteractiveSeekPreviewSeconds = nil
         hasObservedPlayableTimeline = false
         didLogStartupBufferingBeforeTimeline = false
+        VideoPlayerDiagnostics.logMemory(event: "teardown_end_\(trigger)", playerID: playerID)
         print("[VideoPlayer] teardown end | trigger: \(trigger) | playerID: \(playerID) | file: \(item.name)")
     }
 

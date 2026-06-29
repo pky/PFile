@@ -24,6 +24,16 @@ final class SMBResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, 
         self.ownerID = ownerID
     }
 
+    func cancelAllLoadingRequests() {
+        queue.async {
+            let tasks = Array(self.tasks.values)
+            self.tasks.removeAll()
+            for task in tasks {
+                task.cancel()
+            }
+        }
+    }
+
     func resourceLoader(
         _ resourceLoader: AVAssetResourceLoader,
         shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest

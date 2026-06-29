@@ -41,6 +41,10 @@ struct AVPlayerLayerView: UIViewRepresentable {
         notifyReady(context: context)
     }
 
+    static func dismantleUIView(_ uiView: PlayerLayerUIView, coordinator: Coordinator) {
+        uiView.player = nil
+    }
+
     private func notifyReady(context: Context) {
         guard !context.coordinator.didNotifyReady else { return }
         context.coordinator.didNotifyReady = true

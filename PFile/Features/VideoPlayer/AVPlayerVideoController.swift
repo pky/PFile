@@ -100,12 +100,21 @@ final class AVPlayerVideoController: @unchecked Sendable {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil
         }
+        onTimeChanged = nil
+        onDurationChanged = nil
+        onBufferingChanged = nil
+        onPlayingChanged = nil
+        onFailed = nil
         statusObservation?.invalidate()
         statusObservation = nil
         timeControlObservation?.invalidate()
         timeControlObservation = nil
         imageGenerator?.cancelAllCGImageGeneration()
         imageGenerator = nil
+        resourceLoader.cancelAllLoadingRequests()
+        asset?.resourceLoader.setDelegate(nil, queue: nil)
+        asset?.cancelLoading()
+        playerItem?.cancelPendingSeeks()
         player.pause()
         player.replaceCurrentItem(with: nil)
         playerItem = nil
