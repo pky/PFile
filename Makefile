@@ -1,6 +1,6 @@
 DEVELOPER_DIR := /Applications/Xcode.app/Contents/Developer
 XCODEBUILD   := $(DEVELOPER_DIR)/usr/bin/xcodebuild
-WORKSPACE    := PFile.xcworkspace
+PROJECT      := PFile.xcodeproj
 SCHEME       := PFile
 SIMULATOR    := platform=iOS Simulator,OS=latest,name=iPad mini (A17 Pro)
 XCPRETTY     := $(shell which xcpretty 2>/dev/null)
@@ -14,7 +14,7 @@ else
 endif
 
 XCODE_FLAGS := \
-	-workspace $(WORKSPACE) \
+	-project $(PROJECT) \
 	-scheme $(SCHEME) \
 	-destination '$(SIMULATOR)' \
 	-configuration Debug \
@@ -46,6 +46,6 @@ clean:
 ## clone 直後の初期セットアップ
 setup:
 	gem install xcpretty --no-document --user-install 2>/dev/null || true
+	sh scripts/prepare-mobilevlckit-binary.sh
 	xcodegen generate
-	pod install
 	sh scripts/setup-hooks.sh

@@ -87,6 +87,8 @@ targets:
         product: FirebaseCrashlytics
       - package: GoogleMobileAds
         product: GoogleMobileAds
+      - framework: Packages/MobileVLCKitBinary/Artifacts/MobileVLCKit.xcframework
+        embed: true
     postBuildScripts:
       - name: "[Firebase] Crashlytics dSYM Upload"
         script: |

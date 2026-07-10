@@ -37,12 +37,12 @@ VLCKit は VideoLAN の iOS 向け再生ライブラリ。
 主な特徴:
 
 - MKV、AVI、FLV、DivX、Xvid、OGG、WMV など幅広い形式に対応
-- CocoaPods 経由で導入できる
+- バイナリフレームワークとして導入できる
 - LGPL ライセンスに基づく OSS ライブラリ
 
 ## VLCKitの導入時の注意点
 
-- SPMに対応していないためCocoaPodsまたは手動でバイナリフレームワークを組み込む
+- SPMに対応していないため手動でバイナリフレームワークを組み込む
 - OSSライセンス表示画面を設ける（About画面またはSettings内）
 - VLCKitのバージョンと対応iOSバージョンを都度確認する
 

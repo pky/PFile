@@ -39,9 +39,8 @@ ExportOptions.plist
 *.key
 AuthKey_*.p8
 
-# CocoaPods
-Pods/
-!Podfile.lock
+# Local binary artifacts
+Packages/MobileVLCKitBinary/Artifacts/
 
 # Claude Code
 .claude/

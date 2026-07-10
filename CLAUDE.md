@@ -7,7 +7,7 @@ README の説明を繰り返すのではなく、このリポジトリ固有の�
 
 ## 生成物
 
-- `PFile.xcodeproj` と `PFile.xcworkspace` は生成物として扱う
+- `PFile.xcodeproj` は生成物として扱う
 - Xcode プロジェクト設定を変えるときは `project.yml` を編集する
 - `project.yml` を変更したら `xcodegen generate` または `make setup` で再生成する
 - `PFile/Resources/Info.plist` は生成される前提で、リポジトリには含めない

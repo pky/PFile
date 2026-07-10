@@ -4,7 +4,7 @@ set -e
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 XCODEBUILD=$DEVELOPER_DIR/usr/bin/xcodebuild
 SIMCTL=$DEVELOPER_DIR/usr/bin/simctl
-WORKSPACE=PFile.xcworkspace
+PROJECT=PFile.xcodeproj
 SCHEME=PFile
 SIM_NAME="iPad mini (A17 Pro)"
 
@@ -16,7 +16,7 @@ $SIMCTL boot "$SIM_UDID" 2>/dev/null || true
 # ビルド + テスト
 echo ">>> ビルド + テスト実行..."
 $XCODEBUILD \
-  -workspace "$WORKSPACE" \
+  -project "$PROJECT" \
   -scheme "$SCHEME" \
   -destination "platform=iOS Simulator,id=$SIM_UDID" \
   -configuration Debug \

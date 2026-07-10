@@ -211,12 +211,16 @@ final class SMBClientManager {
     }
 
     private func warmUpEntryPath(_ entry: [URLResourceKey: any Sendable], parentPath: String) -> String? {
+        guard let name = entry[.nameKey] as? String else { return nil }
+        let parent = parentPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let pathFromParent = parent.isEmpty ? name : "\(parent)/\(name)"
+        if !pathFromParent.isEmpty {
+            return normalizedRelativePath(pathFromParent)
+        }
         if let rawPath = entry[.pathKey] as? String {
             return normalizedRelativePath(rawPath)
         }
-        guard let name = entry[.nameKey] as? String else { return nil }
-        let parent = parentPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return parent.isEmpty ? name : "\(parent)/\(name)"
+        return nil
     }
 
 #else

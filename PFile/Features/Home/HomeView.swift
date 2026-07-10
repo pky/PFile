@@ -90,10 +90,26 @@ struct HomeView: View {
     private func selectRemoteConnection(_ connection: RemoteConnection) {
         selectSource(.remote(connection.id))
         Task {
-            try? await appEnvironment.smbClientManager.warmUpFirstReadableFile(
-                for: connection,
-                at: connection.startPath
-            )
+            print("[Home] NAS warm-up started | connection: \(connection.displayName) | path: \(connection.startPath)")
+            do {
+                try await appEnvironment.smbClientManager.warmUpShare(
+                    for: connection,
+                    at: connection.startPath
+                )
+                print("[Home] NAS share warm-up succeeded | connection: \(connection.displayName)")
+            } catch {
+                print("[Home] NAS share warm-up failed | connection: \(connection.displayName) | error: \(error)")
+            }
+
+            do {
+                try await appEnvironment.smbClientManager.warmUpFirstReadableFile(
+                    for: connection,
+                    at: connection.startPath
+                )
+                print("[Home] NAS file warm-up succeeded | connection: \(connection.displayName)")
+            } catch {
+                print("[Home] NAS file warm-up failed | connection: \(connection.displayName) | error: \(error)")
+            }
         }
     }
 

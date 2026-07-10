@@ -61,7 +61,6 @@ docs/               設計メモ、調査メモ
 
 - Xcode
 - iOS 17 以降の Simulator または実機
-- CocoaPods
 - XcodeGen
 
 ### 初期化
@@ -70,15 +69,15 @@ docs/               設計メモ、調査メモ
 make setup
 ```
 
-`make setup` は `xcodegen generate`、`pod install`、Git hook セットアップを実行します。公開リポジトリを clone した直後は、まずこのコマンドで Xcode プロジェクトを再生成してください。
+`make setup` は `MobileVLCKit` バイナリ取得、`xcodegen generate`、Git hook セットアップを実行します。公開リポジトリを clone した直後は、まずこのコマンドで Xcode プロジェクトを再生成してください。
 
 `PFile/Resources/Info.plist` は `project.yml` から生成する前提のため、リポジトリには含めません。
 
 手動で行う場合は次の順で実行します。
 
 ```sh
+sh scripts/prepare-mobilevlckit-binary.sh
 xcodegen generate
-pod install
 sh scripts/setup-hooks.sh
 ```
 
@@ -96,7 +95,7 @@ make build
 make test
 ```
 
-Xcode から開く場合は、初期化後に `PFile.xcworkspace` を開いてください。
+Xcode から開く場合は、初期化後に `PFile.xcodeproj` を開いてください。
 
 ## 設計メモ
 
