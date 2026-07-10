@@ -54,9 +54,13 @@ struct VideoPlayerView: View {
                     canNavigateForward: currentIndex < items.index(before: items.endIndex),
                     errorMessage: viewModel.errorMessage,
                     onClose: {
-                        viewModel.stopPlayback(trigger: "close_button")
-                        await viewModel.saveWatchPosition()
                         dismiss()
+                        viewModel.cancelSetup()
+                        viewModel.stopPlayback(trigger: "close_button")
+                        Task {
+                            await viewModel.saveWatchPosition(capturesThumbnail: false)
+                            viewModel.tearDownPlayback(trigger: "close_button")
+                        }
                     },
                     onReturnHome: onReturnHome == nil ? nil : {
                         viewModel.stopPlayback(trigger: "home_button")

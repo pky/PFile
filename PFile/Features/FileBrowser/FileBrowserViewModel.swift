@@ -53,6 +53,7 @@ final class FileBrowserViewModel {
     private let mediaListRepository: (any MediaListRepository)?
     private let reconnectHandler: (() -> Void)?
     private var prefetchTask: Task<Void, Never>?
+    private var warmUpTask: Task<Void, Never>?
     private var isNetworkWorkSuspended = false
 
     private static let sortKeyDefaultsKey        = "FileBrowser.sortKey"
@@ -111,6 +112,7 @@ final class FileBrowserViewModel {
             let fetched = try await fileRepository.listDirectory(at: currentPath)
             items = sortService.sort(fetched, by: sortKey, order: sortOrder, foldersFirst: foldersFirst)
             errorMessage = nil
+            startVideoFileWarmUp()
             startThumbnailPrefetch()
         } catch {
             items = []
@@ -142,6 +144,8 @@ final class FileBrowserViewModel {
         isNetworkWorkSuspended = true
         prefetchTask?.cancel()
         prefetchTask = nil
+        warmUpTask?.cancel()
+        warmUpTask = nil
         reconnectHandler?()
     }
 
@@ -212,6 +216,18 @@ final class FileBrowserViewModel {
                 guard let self, !Task.isCancelled else { return }
                 await self.loadThumbnail(for: item)
             }
+        }
+    }
+
+    private func startVideoFileWarmUp() {
+        warmUpTask?.cancel()
+        warmUpTask = nil
+        guard !isNetworkWorkSuspended,
+              let smbClientManager,
+              let firstVideo = items.first(where: { $0.isVideo }) else { return }
+
+        warmUpTask = Task {
+            try? await smbClientManager.warmUpFile(for: connection, at: firstVideo.path)
         }
     }
 

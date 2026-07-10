@@ -87,6 +87,16 @@ struct HomeView: View {
         columnVisibility = .detailOnly
     }
 
+    private func selectRemoteConnection(_ connection: RemoteConnection) {
+        selectSource(.remote(connection.id))
+        Task {
+            try? await appEnvironment.smbClientManager.warmUpShare(
+                for: connection,
+                at: connection.startPath
+            )
+        }
+    }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarContent
@@ -301,7 +311,7 @@ struct HomeView: View {
                 Section {
                     ForEach(viewModel.connections) { connection in
                         Button {
-                            selectSource(.remote(connection.id))
+                            selectRemoteConnection(connection)
                         } label: {
                             ConnectionRowView(connection: connection)
                         }
@@ -472,7 +482,7 @@ struct HomeView: View {
                 if let connectionsViewModel {
                     ForEach(connectionsViewModel.connections) { connection in
                         Button {
-                            selectSource(.remote(connection.id))
+                            selectRemoteConnection(connection)
                         } label: {
                             ConnectionRowView(connection: connection)
                         }

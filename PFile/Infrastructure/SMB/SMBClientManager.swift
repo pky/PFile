@@ -83,6 +83,32 @@ final class SMBClientManager {
         return client
     }
 
+    func warmUpShare(for connection: RemoteConnection, at path: String) async throws {
+        let credential = try loadCredential(for: connection)
+        let shareName = credential.shareName == "/" ? "" : credential.shareName
+        let client = try client(for: connection)
+
+        do {
+            try await warmUp(client: client, shareName: shareName, path: path)
+        } catch {
+            let reconnectedClient = try reconnectClient(for: connection)
+            try await warmUp(client: reconnectedClient, shareName: shareName, path: path)
+        }
+    }
+
+    func warmUpFile(for connection: RemoteConnection, at path: String) async throws {
+        let credential = try loadCredential(for: connection)
+        let shareName = credential.shareName == "/" ? "" : credential.shareName
+        let client = try client(for: connection)
+
+        do {
+            try await readFileHeader(client: client, shareName: shareName, path: path)
+        } catch {
+            let reconnectedClient = try reconnectClient(for: connection)
+            try await readFileHeader(client: reconnectedClient, shareName: shareName, path: path)
+        }
+    }
+
     func disconnect(for connectionId: UUID) {
         lock.lock()
         let client = clients[connectionId]
@@ -108,9 +134,36 @@ final class SMBClientManager {
         return c.url!
     }
 
+    private func warmUp(client: SMB2Manager, shareName: String, path: String) async throws {
+        try await client.connectShare(name: shareName)
+        let directoryPath = normalizedRelativePath(path)
+        _ = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[[URLResourceKey: any Sendable]], Error>) in
+            client.contentsOfDirectory(atPath: directoryPath) { cont.resume(with: $0) }
+        }
+    }
+
+    private func normalizedRelativePath(_ path: String) -> String {
+        let relative = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        return relative.precomposedStringWithCanonicalMapping
+    }
+
+    private func readFileHeader(client: SMB2Manager, shareName: String, path: String) async throws {
+        try await client.connectShare(name: shareName)
+        let filePath = normalizedRelativePath(path)
+        _ = try await client.contents(atPath: filePath, range: UInt64(0)..<UInt64(1024 * 1024))
+    }
+
 #else
 
     // Simulator 用スタブ
+    func warmUpShare(for connection: RemoteConnection, at path: String) async throws {
+        throw SMBClientError.simulatorUnsupported
+    }
+
+    func warmUpFile(for connection: RemoteConnection, at path: String) async throws {
+        throw SMBClientError.simulatorUnsupported
+    }
+
     func disconnect(for connectionId: UUID) {}
     func disconnectAll() {}
 
