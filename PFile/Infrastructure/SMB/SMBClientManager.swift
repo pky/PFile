@@ -109,6 +109,19 @@ final class SMBClientManager {
         }
     }
 
+    func warmUpFirstReadableFile(for connection: RemoteConnection, at path: String) async throws {
+        let credential = try loadCredential(for: connection)
+        let shareName = credential.shareName == "/" ? "" : credential.shareName
+        let client = try client(for: connection)
+
+        do {
+            try await warmUpFirstReadableFile(client: client, shareName: shareName, path: path)
+        } catch {
+            let reconnectedClient = try reconnectClient(for: connection)
+            try await warmUpFirstReadableFile(client: reconnectedClient, shareName: shareName, path: path)
+        }
+    }
+
     func disconnect(for connectionId: UUID) {
         lock.lock()
         let client = clients[connectionId]
@@ -153,6 +166,59 @@ final class SMBClientManager {
         _ = try await client.contents(atPath: filePath, range: UInt64(0)..<UInt64(1024 * 1024))
     }
 
+    private func warmUpFirstReadableFile(client: SMB2Manager, shareName: String, path: String) async throws {
+        try await client.connectShare(name: shareName)
+        let rootPath = normalizedRelativePath(path)
+        guard let filePath = try await findFirstReadableFilePath(client: client, path: rootPath, remainingDepth: 3) else {
+            return
+        }
+        _ = try await client.contents(atPath: filePath, range: UInt64(0)..<UInt64(1024 * 1024))
+    }
+
+    private func findFirstReadableFilePath(
+        client: SMB2Manager,
+        path: String,
+        remainingDepth: Int
+    ) async throws -> String? {
+        let entries = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[[URLResourceKey: any Sendable]], Error>) in
+            client.contentsOfDirectory(atPath: path) { cont.resume(with: $0) }
+        }
+
+        let visibleEntries = entries.filter { entry in
+            guard let name = entry[.nameKey] as? String else { return false }
+            return !name.hasPrefix(".")
+        }
+
+        if let file = visibleEntries.first(where: { ($0[.isDirectoryKey] as? Bool) != true }),
+           let filePath = warmUpEntryPath(file, parentPath: path) {
+            return filePath
+        }
+
+        guard remainingDepth > 0 else { return nil }
+
+        for directory in visibleEntries.prefix(12) where (directory[.isDirectoryKey] as? Bool) == true {
+            guard let directoryPath = warmUpEntryPath(directory, parentPath: path) else { continue }
+            if let filePath = try? await findFirstReadableFilePath(
+                client: client,
+                path: directoryPath,
+                remainingDepth: remainingDepth - 1
+            ) {
+                return filePath
+            }
+        }
+
+        return nil
+    }
+
+    private func warmUpEntryPath(_ entry: [URLResourceKey: any Sendable], parentPath: String) -> String? {
+        if let rawPath = entry[.pathKey] as? String {
+            return normalizedRelativePath(rawPath)
+        }
+        guard let name = entry[.nameKey] as? String else { return nil }
+        let parent = parentPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return parent.isEmpty ? name : "\(parent)/\(name)"
+    }
+
 #else
 
     // Simulator 用スタブ
@@ -161,6 +227,10 @@ final class SMBClientManager {
     }
 
     func warmUpFile(for connection: RemoteConnection, at path: String) async throws {
+        throw SMBClientError.simulatorUnsupported
+    }
+
+    func warmUpFirstReadableFile(for connection: RemoteConnection, at path: String) async throws {
         throw SMBClientError.simulatorUnsupported
     }
 

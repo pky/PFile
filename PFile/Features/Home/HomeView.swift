@@ -90,7 +90,7 @@ struct HomeView: View {
     private func selectRemoteConnection(_ connection: RemoteConnection) {
         selectSource(.remote(connection.id))
         Task {
-            try? await appEnvironment.smbClientManager.warmUpShare(
+            try? await appEnvironment.smbClientManager.warmUpFirstReadableFile(
                 for: connection,
                 at: connection.startPath
             )

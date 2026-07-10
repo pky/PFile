@@ -223,11 +223,20 @@ final class FileBrowserViewModel {
         warmUpTask?.cancel()
         warmUpTask = nil
         guard !isNetworkWorkSuspended,
-              let smbClientManager,
-              let firstVideo = items.first(where: { $0.isVideo }) else { return }
+              let smbClientManager else { return }
 
         warmUpTask = Task {
-            try? await smbClientManager.warmUpFile(for: connection, at: firstVideo.path)
+            if let firstVideo = items.first(where: { $0.isVideo }) {
+                try? await smbClientManager.warmUpFile(for: connection, at: firstVideo.path)
+                return
+            }
+
+            if let firstFile = items.first(where: { !$0.isDirectory }) {
+                try? await smbClientManager.warmUpFile(for: connection, at: firstFile.path)
+                return
+            }
+
+            try? await smbClientManager.warmUpFirstReadableFile(for: connection, at: currentPath)
         }
     }
 
