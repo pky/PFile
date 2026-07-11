@@ -5,6 +5,7 @@ import SwiftUI
 struct PhotoLibraryBrowserView: View {
 
     @Environment(\.appEnvironment) private var appEnvironment
+    @Environment(\.scenePhase) private var scenePhase
     var isActive: Bool = true
     @State private var viewModel = PhotoLibraryBrowserViewModel()
     @State private var selectedRoute: MediaViewerRoute?
@@ -36,6 +37,12 @@ struct PhotoLibraryBrowserView: View {
         }
         .onChange(of: isActive) { _, newValue in
             guard newValue else { return }
+            Task {
+                await viewModel.prepare()
+            }
+        }
+        .onChange(of: scenePhase) { _, newValue in
+            guard newValue == .active, isActive else { return }
             Task {
                 await viewModel.prepare()
             }
@@ -142,6 +149,17 @@ struct PhotoLibraryBrowserView: View {
                 }
             }
         } else {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    Task {
+                        await viewModel.loadAssets()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(viewModel.isLoading)
+                .accessibilityLabel("更新")
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Picker("表示形式", selection: $prefs.viewMode) {

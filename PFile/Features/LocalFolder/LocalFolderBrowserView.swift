@@ -342,6 +342,17 @@ private struct LocalFolderDirectoryView: View {
             }
         } else {
             ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    Task {
+                        await viewModel.loadDirectory()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(viewModel.isLoading)
+                .accessibilityLabel("更新")
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button("選択") {
                     viewModel.toggleSelectMode()
                 }
@@ -379,6 +390,9 @@ private struct LocalFolderDirectoryView: View {
             case .gridTitled, .gridNoTitle, .gridDetail:
                 gridContent(viewModel: viewModel)
             }
+        }
+        .refreshable {
+            await viewModel.loadDirectory()
         }
         .overlay {
             if viewModel.isLoading {

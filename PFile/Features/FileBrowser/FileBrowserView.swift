@@ -240,6 +240,17 @@ private struct DirectoryContentView: View {
         } else {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
+                    Task {
+                        await viewModel.loadDirectory()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(viewModel.isLoading)
+                .accessibilityLabel("更新")
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
                     showSearchSheet = true
                 } label: {
                     Image(systemName: "magnifyingglass")
