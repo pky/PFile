@@ -903,6 +903,7 @@ struct LocalVideoPlayerView: View {
             progress: videoProgress,
             currentPositionSeconds: controller.currentPositionSeconds,
             durationSeconds: controller.durationSeconds,
+            resolutionText: controller.resolutionText,
             canNavigateBackward: currentIndex > items.startIndex,
             canNavigateForward: currentIndex < items.index(before: items.endIndex),
             errorMessage: controller.errorMessage,
@@ -1003,6 +1004,7 @@ final class LocalVideoPlayerController: NSObject {
     var isMuted = false
     var currentPositionSeconds: Double = 0
     var durationSeconds: Double = 0
+    var resolutionText: String?
     var errorMessage: String?
 
     let player = VLCMediaPlayer()
@@ -1048,6 +1050,7 @@ final class LocalVideoPlayerController: NSObject {
         player.media = nil
         currentPositionSeconds = 0
         durationSeconds = 0
+        resolutionText = nil
         isPlaying = false
     }
 }
@@ -1066,6 +1069,21 @@ extension LocalVideoPlayerController: VLCMediaPlayerDelegate {
         currentPositionSeconds = Double(ms) / 1000.0
         if let lengthMs = player.media?.length.intValue, lengthMs > 0 {
             durationSeconds = Double(lengthMs) / 1000.0
+        }
+        if resolutionText == nil, let media = player.media {
+            for case let track as NSDictionary in media.tracksInformation {
+                guard track[VLCMediaTracksInformationType] as? String
+                        == VLCMediaTracksInformationTypeVideo,
+                      let width = track[VLCMediaTracksInformationVideoWidth] as? NSNumber,
+                      let height = track[VLCMediaTracksInformationVideoHeight] as? NSNumber else {
+                    continue
+                }
+                resolutionText = VideoResolutionFormatter.text(
+                    width: width.doubleValue,
+                    height: height.doubleValue
+                )
+                break
+            }
         }
     }
 }

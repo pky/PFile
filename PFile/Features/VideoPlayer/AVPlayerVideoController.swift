@@ -31,9 +31,11 @@ final class AVPlayerVideoController: @unchecked Sendable {
     private var isDrawableReady = false
     private var didStartPlayback = false
     private var didApplyStartPosition = false
+    private var didReportPresentationSize = false
 
     var onTimeChanged: ((Double) -> Void)?
     var onDurationChanged: ((Double) -> Void)?
+    var onPresentationSizeChanged: ((CGSize) -> Void)?
     var onBufferingChanged: ((Bool) -> Void)?
     var onPlayingChanged: ((Bool) -> Void)?
     var onFailed: ((Error?) -> Void)?
@@ -102,6 +104,7 @@ final class AVPlayerVideoController: @unchecked Sendable {
         }
         onTimeChanged = nil
         onDurationChanged = nil
+        onPresentationSizeChanged = nil
         onBufferingChanged = nil
         onPlayingChanged = nil
         onFailed = nil
@@ -119,6 +122,7 @@ final class AVPlayerVideoController: @unchecked Sendable {
         player.replaceCurrentItem(with: nil)
         playerItem = nil
         asset = nil
+        didReportPresentationSize = false
         print("[AVPlayer] teardown | playerID: \(ownerID) | file: \(fileName)")
     }
 
@@ -206,6 +210,7 @@ final class AVPlayerVideoController: @unchecked Sendable {
             if let duration = self.playerItem?.duration.seconds, duration.isFinite, duration > 0 {
                 self.onDurationChanged?(duration)
             }
+            self.reportPresentationSizeIfAvailable()
         }
     }
 
@@ -216,6 +221,7 @@ final class AVPlayerVideoController: @unchecked Sendable {
             if let duration = playerItem?.duration.seconds, duration.isFinite, duration > 0 {
                 onDurationChanged?(duration)
             }
+            reportPresentationSizeIfAvailable()
             applyStartPositionIfNeeded()
             startPlaybackIfReady()
         case .failed:
@@ -224,6 +230,15 @@ final class AVPlayerVideoController: @unchecked Sendable {
         default:
             break
         }
+    }
+
+    private func reportPresentationSizeIfAvailable() {
+        guard !didReportPresentationSize,
+              let size = playerItem?.presentationSize,
+              size.width > 0,
+              size.height > 0 else { return }
+        didReportPresentationSize = true
+        onPresentationSizeChanged?(size)
     }
 
     private func handleTimeControlChange(_ status: AVPlayer.TimeControlStatus) {

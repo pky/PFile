@@ -61,6 +61,19 @@ struct ThumbnailGenerationPolicyTests {
     }
 }
 
+struct VideoResolutionFormatterTests {
+
+    @Test("動画解像度をSD・HD・FHD・4Kへ分類する", arguments: [
+        (640.0, 480.0, "SD 640×480"),
+        (1_280.0, 720.0, "HD 1280×720"),
+        (1_920.0, 1_080.0, "FHD 1920×1080"),
+        (3_840.0, 2_160.0, "4K 3840×2160"),
+    ])
+    func formatsResolution(width: Double, height: Double, expected: String) {
+        #expect(VideoResolutionFormatter.text(width: width, height: height) == expected)
+    }
+}
+
 struct SMBHTTPResponsePlannerTests {
 
     @Test("Range なしは 200 OK で全体を返す")

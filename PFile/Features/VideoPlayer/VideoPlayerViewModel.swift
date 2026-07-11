@@ -50,6 +50,7 @@ final class VideoPlayerViewModel: NSObject {
     var isMuted = false
     var currentPositionSeconds: Double = 0
     var durationSeconds: Double = 0
+    var resolutionText: String?
     var errorMessage: String?
 
     // MP4 / MOV は AVPlayer 経路で再生する。true のとき View は AVPlayerLayer を描画する。
@@ -781,6 +782,12 @@ final class VideoPlayerViewModel: NSObject {
         controller.onDurationChanged = { [weak self] duration in
             self?.durationSeconds = duration
         }
+        controller.onPresentationSizeChanged = { [weak self] size in
+            self?.resolutionText = VideoResolutionFormatter.text(
+                width: size.width,
+                height: size.height
+            )
+        }
         controller.onBufferingChanged = { [weak self] buffering in
             guard let self else { return }
             if buffering {
@@ -1369,6 +1376,9 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
         if let lengthMs = player.media?.length.intValue, lengthMs > 0 {
             durationSeconds = Double(lengthMs) / 1000.0
         }
+        if resolutionText == nil, let media = player.media {
+            updateResolution(from: media)
+        }
 
         if ms > 0 || durationSeconds > 0 {
             hasObservedPlayableTimeline = true
@@ -1388,6 +1398,21 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
         print("[VideoPlayer] Track count: \(tracks.count) | playerID: \(playerID)")
         for (i, track) in tracks.enumerated() {
             print("[VideoPlayer]   track[\(i)] | playerID: \(playerID): \(track)")
+        }
+    }
+
+    private func updateResolution(from media: VLCMedia) {
+        for case let track as NSDictionary in media.tracksInformation {
+            guard track[VLCMediaTracksInformationType] as? String
+                    == VLCMediaTracksInformationTypeVideo,
+                  let width = track[VLCMediaTracksInformationVideoWidth] as? NSNumber,
+                  let height = track[VLCMediaTracksInformationVideoHeight] as? NSNumber,
+                  let text = VideoResolutionFormatter.text(
+                    width: width.doubleValue,
+                    height: height.doubleValue
+                  ) else { continue }
+            resolutionText = text
+            return
         }
     }
 
@@ -1482,6 +1507,7 @@ extension VideoPlayerViewModel: VLCMediaDelegate {
         for (i, track) in tracks.enumerated() {
             print("[VideoPlayer]   track[\(i)] | playerID: \(playerID): \(track)")
         }
+        updateResolution(from: aMedia)
     }
 }
 

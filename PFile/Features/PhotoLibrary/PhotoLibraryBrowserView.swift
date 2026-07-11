@@ -651,6 +651,7 @@ struct PhotoLibraryMediaViewerView: View {
     @State private var isMuted = false
     @State private var currentPositionSeconds: Double = 0
     @State private var durationSeconds: Double = 0
+    @State private var resolutionText: String?
     @State private var showAddToListSheet = false
     @State private var prefetchedImages: [String: UIImage] = [:]
     @State private var imageLoadRequestID = UUID()
@@ -699,6 +700,7 @@ struct PhotoLibraryMediaViewerView: View {
                     progress: videoProgress,
                     currentPositionSeconds: currentPositionSeconds,
                     durationSeconds: durationSeconds,
+                    resolutionText: resolutionText,
                     canNavigateBackward: canNavigateBackward,
                     canNavigateForward: canNavigateForward,
                     errorMessage: errorMessage,
@@ -839,6 +841,10 @@ struct PhotoLibraryMediaViewerView: View {
 
     private func loadVideo(asset: PHAsset) async {
         itemName = currentItem?.name ?? makeAssetTitle(from: asset, fallback: "動画")
+        resolutionText = VideoResolutionFormatter.text(
+            width: Double(asset.pixelWidth),
+            height: Double(asset.pixelHeight)
+        )
 
         let options = PHVideoRequestOptions()
         options.deliveryMode = .automatic
@@ -911,6 +917,7 @@ struct PhotoLibraryMediaViewerView: View {
         uiImage = nil
         currentPositionSeconds = 0
         durationSeconds = 0
+        resolutionText = nil
         isPlaying = false
     }
 

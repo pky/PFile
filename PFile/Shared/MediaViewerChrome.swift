@@ -410,7 +410,7 @@ struct MediaViewerVideoControls<VolumeControl: View>: View {
     let progress: Double
     let currentTimeText: String
     let durationText: String
-    let showsPlaybackTime: Bool
+    let resolutionText: String?
     let pageText: String?
     let onSkipBackwardLong: () -> Void
     let onSkipBackwardShort: () -> Void
@@ -428,7 +428,7 @@ struct MediaViewerVideoControls<VolumeControl: View>: View {
         progress: Double,
         currentTimeText: String,
         durationText: String,
-        showsPlaybackTime: Bool,
+        resolutionText: String?,
         pageText: String?,
         onSkipBackwardLong: @escaping () -> Void,
         onSkipBackwardShort: @escaping () -> Void,
@@ -445,7 +445,7 @@ struct MediaViewerVideoControls<VolumeControl: View>: View {
         self.progress = progress
         self.currentTimeText = currentTimeText
         self.durationText = durationText
-        self.showsPlaybackTime = showsPlaybackTime
+        self.resolutionText = resolutionText
         self.pageText = pageText
         self.onSkipBackwardLong = onSkipBackwardLong
         self.onSkipBackwardShort = onSkipBackwardShort
@@ -477,6 +477,17 @@ struct MediaViewerVideoControls<VolumeControl: View>: View {
                 MediaViewerSeekBar(progress: progress, onChanged: onSeekChanged, onEnded: onSeekEnded)
 
                 HStack(spacing: 8) {
+                    if let resolutionText {
+                        Text(resolutionText)
+                    }
+                    Spacer()
+                    Text("\(currentTimeText) / \(durationText)")
+                        .monospacedDigit()
+                }
+                .font(.caption)
+                .foregroundStyle(.white)
+
+                HStack(spacing: 8) {
                     Button(action: onToggleMute) {
                         Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                             .font(.system(size: 18))
@@ -488,15 +499,8 @@ struct MediaViewerVideoControls<VolumeControl: View>: View {
 
                 MediaViewerBrightnessControl()
 
-                if showsPlaybackTime || pageText != nil {
+                if pageText != nil {
                     HStack {
-                        if showsPlaybackTime {
-                            Text(currentTimeText)
-                                .monospacedDigit()
-                            Text("/")
-                            Text(durationText)
-                                .monospacedDigit()
-                        }
                         Spacer()
                         if let pageText {
                             Text(pageText)
@@ -517,6 +521,25 @@ struct MediaViewerVideoControls<VolumeControl: View>: View {
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
         }
+    }
+}
+
+enum VideoResolutionFormatter {
+    static func text(width: Double, height: Double) -> String? {
+        guard width > 0, height > 0 else { return nil }
+        let longSide = max(width, height)
+        let shortSide = min(width, height)
+        let category: String
+        if longSide >= 3_840 || shortSide >= 2_160 {
+            category = "4K"
+        } else if longSide >= 1_920 || shortSide >= 1_080 {
+            category = "FHD"
+        } else if longSide >= 1_280 || shortSide >= 720 {
+            category = "HD"
+        } else {
+            category = "SD"
+        }
+        return "\(category) \(Int(width.rounded()))×\(Int(height.rounded()))"
     }
 }
 
@@ -565,6 +588,7 @@ struct MediaVideoScreen<Renderer: View>: View {
     let progress: Double
     let currentPositionSeconds: Double
     let durationSeconds: Double
+    let resolutionText: String?
     let canNavigateBackward: Bool
     let canNavigateForward: Bool
     let errorMessage: String?
@@ -604,6 +628,7 @@ struct MediaVideoScreen<Renderer: View>: View {
         progress: Double,
         currentPositionSeconds: Double,
         durationSeconds: Double,
+        resolutionText: String? = nil,
         canNavigateBackward: Bool,
         canNavigateForward: Bool,
         errorMessage: String?,
@@ -630,6 +655,7 @@ struct MediaVideoScreen<Renderer: View>: View {
         self.progress = progress
         self.currentPositionSeconds = currentPositionSeconds
         self.durationSeconds = durationSeconds
+        self.resolutionText = resolutionText
         self.canNavigateBackward = canNavigateBackward
         self.canNavigateForward = canNavigateForward
         self.errorMessage = errorMessage
@@ -712,7 +738,7 @@ struct MediaVideoScreen<Renderer: View>: View {
                         progress: seekBarProgress,
                         currentTimeText: formatTime(displayPositionSeconds),
                         durationText: formatTime(durationSeconds),
-                        showsPlaybackTime: !showClock,
+                        resolutionText: resolutionText,
                         pageText: pageText,
                         onSkipBackwardLong: {
                             onSkipBackwardLong()

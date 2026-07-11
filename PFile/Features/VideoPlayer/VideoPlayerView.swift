@@ -50,6 +50,7 @@ struct VideoPlayerView: View {
                     progress: videoProgress(viewModel: viewModel),
                     currentPositionSeconds: viewModel.currentPositionSeconds,
                     durationSeconds: viewModel.durationSeconds,
+                    resolutionText: viewModel.resolutionText,
                     canNavigateBackward: currentIndex > items.startIndex,
                     canNavigateForward: currentIndex < items.index(before: items.endIndex),
                     errorMessage: viewModel.errorMessage,
