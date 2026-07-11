@@ -56,6 +56,16 @@ final class MockWatchHistoryRepository: WatchHistoryRepository {
         histories = Array(histories.prefix(limit))
     }
 
+    var clearThumbnailDataCalled = false
+
+    func clearThumbnailData() async throws -> Int {
+        if shouldThrow { throw TestError.mock }
+        clearThumbnailDataCalled = true
+        let count = histories.filter { $0.thumbnailData != nil }.count
+        histories.forEach { $0.thumbnailData = nil }
+        return count
+    }
+
     func delete(_ history: WatchHistory) async throws {
         if shouldThrow { throw TestError.mock }
         deletedHistories.append(history)

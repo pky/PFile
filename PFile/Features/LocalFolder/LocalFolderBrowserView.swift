@@ -129,9 +129,10 @@ final class LocalFolderBrowserViewModel {
 
     private let sortService = SortService()
     private let repository: LocalFileRepository
-    private let mediaThumbnailProvider: MediaThumbnailProvider?
+    private let mediaThumbnailProvider: (any MediaThumbnailProviding)?
     private let sourceID: UUID
     private let rootURL: URL
+    private var thumbnailCacheObserver: ThumbnailCacheClearObserver?
     private(set) var currentPath: String
 
     var listRegistrationFileRepository: any FileRepository {
@@ -142,13 +143,16 @@ final class LocalFolderBrowserViewModel {
         rootURL: URL,
         currentPath: String,
         sourceID: UUID,
-        mediaThumbnailProvider: MediaThumbnailProvider? = nil
+        mediaThumbnailProvider: (any MediaThumbnailProviding)? = nil
     ) {
         self.rootURL = rootURL
         self.currentPath = currentPath
         self.sourceID = sourceID
         self.repository = LocalFileRepository(rootURL: rootURL)
         self.mediaThumbnailProvider = mediaThumbnailProvider
+        self.thumbnailCacheObserver = ThumbnailCacheClearObserver { [weak self] in
+            self?.thumbnails.removeAll()
+        }
     }
 
     var breadcrumbs: [String] {
@@ -179,6 +183,7 @@ final class LocalFolderBrowserViewModel {
     }
 
     func loadThumbnail(for item: DirectoryItem) async {
+        guard !Task.isCancelled else { return }
         guard item.isMedia else { return }
         let key = cacheKey(for: item)
         if thumbnails[key] != nil { return }
@@ -198,6 +203,7 @@ final class LocalFolderBrowserViewModel {
             item: item,
             connection: nil
         ) {
+            guard !Task.isCancelled else { return }
             thumbnails[key] = image
         }
     }

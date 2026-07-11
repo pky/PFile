@@ -1,6 +1,7 @@
 @testable import PFile
 import Foundation
 import Testing
+import UIKit
 
 @MainActor
 struct MediaListViewModelTests {
@@ -187,6 +188,71 @@ struct MediaListViewModelTests {
 
         #expect(vm.files.count == 1)
         #expect(vm.files.first?.id == file2.id)
+    }
+
+    @Test("リスト詳細はキャッシュ未命中時にサムネイル生成を試みる")
+    func detail_loadThumbnail_callsProviderLoad() async {
+        let connection = ModelFactory.makeConnection()
+        let sourceID = ContentSource.remote(connection.id).id
+        let list = MediaList(name: "テスト", scopeID: sourceID, sortOrder: 0)
+        let file = MediaFile(
+            connectionId: connection.id,
+            sourceID: sourceID,
+            path: "/list/movie.mp4",
+            name: "movie.mp4",
+            itemTypeRaw: "video"
+        )
+        list.items = [file]
+        let repo = MockMediaListRepository()
+        let provider = MockMediaThumbnailProvider()
+        let vm = MediaListDetailViewModel(
+            list: list,
+            repository: repo,
+            mediaThumbnailProvider: provider
+        )
+
+        await vm.loadThumbnail(for: file)
+
+        #expect(provider.loadCalls.count == 1)
+        #expect(provider.loadCalls.first?.source.id == sourceID)
+        #expect(provider.loadCalls.first?.itemPath == "/list/movie.mp4")
+    }
+
+    @Test("リスト詳細で選択した候補画像をサムネイルへ反映する")
+    func detail_selectThumbnail_storesSelectedImage() async {
+        let connection = ModelFactory.makeConnection()
+        let sourceID = ContentSource.remote(connection.id).id
+        let list = MediaList(name: "テスト", scopeID: sourceID, sortOrder: 0)
+        let file = MediaFile(
+            connectionId: connection.id,
+            sourceID: sourceID,
+            path: "/list/movie.mp4",
+            name: "movie.mp4",
+            itemTypeRaw: "video"
+        )
+        list.items = [file]
+        let connectionRepository = MockRemoteConnectionRepository()
+        connectionRepository.connections = [connection]
+        let service = ThumbnailService()
+        let manager = SMBClientManager()
+        let provider = MediaThumbnailProvider(
+            thumbnailService: service,
+            smbClientManager: manager
+        )
+        let vm = MediaListDetailViewModel(
+            list: list,
+            repository: MockMediaListRepository(),
+            remoteConnectionRepository: connectionRepository,
+            mediaThumbnailProvider: provider,
+            thumbnailService: service,
+            smbClientManager: manager
+        )
+        await vm.load()
+
+        vm.selectThumbnail(UIImage(), for: file)
+
+        #expect(vm.canChooseThumbnail(for: file))
+        #expect(vm.thumbnail(for: file) != nil)
     }
 
     @Test("detail は fileId 一致で移動後のパスへ更新できる")

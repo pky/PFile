@@ -25,11 +25,11 @@ final class PlaybackHistoryService {
     }
 
     private let repository: any WatchHistoryRepository
-    private let mediaThumbnailProvider: MediaThumbnailProvider?
+    private let mediaThumbnailProvider: (any MediaThumbnailProviding)?
 
     init(
         repository: any WatchHistoryRepository,
-        mediaThumbnailProvider: MediaThumbnailProvider? = nil
+        mediaThumbnailProvider: (any MediaThumbnailProviding)? = nil
     ) {
         self.repository = repository
         self.mediaThumbnailProvider = mediaThumbnailProvider

@@ -38,6 +38,7 @@ struct FileBrowserView: View {
                     directoryPath: dirPath,
                     navigationPath: $navigationPath,
                     cachedViewModels: $cachedViewModels,
+                    isActive: isActive,
                     onReturnHome: onReturnHome
                 )
                 .environment(\.appEnvironment, appEnvironment)
@@ -54,6 +55,14 @@ struct FileBrowserView: View {
                 to: restoredPath
             )
             hasRestoredNavigationPath = true
+        }
+        .onChange(of: isActive) { _, newValue in
+            if newValue {
+                let currentPath = navigationPath.last ?? connection.startPath
+                cachedViewModels[currentPath]?.resumeNetworkWork()
+            } else {
+                cachedViewModels.values.forEach { $0.prepareForBackground() }
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
@@ -97,6 +106,7 @@ private struct DirectoryContentView: View {
     @State private var selectedRoute: MediaViewerRoute?
     @State private var showAddToListSheet = false
     @State private var showSearchSheet = false
+    @State private var thumbnailChoiceItem: DirectoryItem?
 
     var body: some View {
         Group {
@@ -140,6 +150,7 @@ private struct DirectoryContentView: View {
                 await created.loadDirectory()
             }
             viewModel = vm
+            vm.resumeNetworkWork()
             appEnvironment.browsePathStore.syncCurrentPath(
                 directoryPath,
                 for: source,
@@ -187,6 +198,19 @@ private struct DirectoryContentView: View {
                     }
                 )
                 .environment(\.appEnvironment, appEnvironment)
+            }
+        }
+        .sheet(item: $thumbnailChoiceItem) { item in
+            if let viewModel {
+                ThumbnailChoiceView(
+                    item: item,
+                    loadCandidates: { progress in
+                        await viewModel.generateThumbnailChoices(for: item, progress: progress)
+                    },
+                    selectCandidate: { image in
+                        viewModel.selectThumbnail(image, for: item)
+                    }
+                )
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -342,14 +366,16 @@ private struct DirectoryContentView: View {
                     selectableRow(item: item, viewModel: viewModel) {
                         FileRowView(item: item, thumbnail: viewModel.thumbnail(for: item), showDetail: showDetail)
                     }
-                    .task(id: item.path) {
+                    .task(id: "\(item.path)|\(isActive)") {
+                        guard isActive else { return }
                         await viewModel.loadThumbnail(for: item)
                     }
                 } else {
                     itemButton(item: item, viewModel: viewModel) {
                         FileRowView(item: item, thumbnail: viewModel.thumbnail(for: item), showDetail: showDetail)
                     }
-                    .task(id: item.path) {
+                    .task(id: "\(item.path)|\(isActive)") {
+                        guard isActive else { return }
                         await viewModel.loadThumbnail(for: item)
                     }
                 }
@@ -371,14 +397,16 @@ private struct DirectoryContentView: View {
                         selectableRow(item: item, viewModel: viewModel) {
                             gridCell(item: item, viewModel: viewModel)
                         }
-                        .task(id: item.path) {
+                        .task(id: "\(item.path)|\(isActive)") {
+                            guard isActive else { return }
                             await viewModel.loadThumbnail(for: item)
                         }
                     } else {
                         itemButton(item: item, viewModel: viewModel) {
                             gridCell(item: item, viewModel: viewModel)
                         }
-                        .task(id: item.path) {
+                        .task(id: "\(item.path)|\(isActive)") {
+                            guard isActive else { return }
                             await viewModel.loadThumbnail(for: item)
                         }
                     }
@@ -456,6 +484,13 @@ private struct DirectoryContentView: View {
                 content()
             }
             .buttonStyle(.plain)
+            .contextMenu {
+                Button {
+                    thumbnailChoiceItem = item
+                } label: {
+                    Label("サムネイルを選び直す", systemImage: "photo.on.rectangle.angled")
+                }
+            }
         } else if item.isPDF {
             Button {
                 selectedRoute = MediaViewerPageSource(
@@ -538,6 +573,80 @@ private struct DirectoryContentView: View {
 
     private func currentFolderName(viewModel: FileBrowserViewModel) -> String {
         viewModel.breadcrumbs.last ?? connection.displayName
+    }
+}
+
+// MARK: - サムネイル候補選択
+
+struct ThumbnailChoiceView: View {
+    @Environment(\.dismiss) private var dismiss
+    let item: DirectoryItem
+    let loadCandidates: (@escaping ThumbnailChoiceProgressHandler) async -> [UIImage]
+    let selectCandidate: (UIImage) -> Void
+
+    @State private var candidates: [UIImage] = []
+    @State private var isLoading = true
+    @State private var generatedCandidateCount = 0
+    @State private var maximumCandidateCount = ThumbnailGenerationPolicy.maximumChoiceCount
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isLoading {
+                    VStack(spacing: 12) {
+                        ProgressView(
+                            value: Double(generatedCandidateCount),
+                            total: Double(max(maximumCandidateCount, 1))
+                        )
+                        .frame(maxWidth: 240)
+                        Text("候補を生成中… \(generatedCandidateCount)/\(maximumCandidateCount)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if candidates.isEmpty {
+                    ContentUnavailableView(
+                        "候補を生成できませんでした",
+                        systemImage: "photo.badge.exclamationmark",
+                        description: Text("動画を読み込めないか、取得したフレームがすべて黒画像または単色画像でした")
+                    )
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 12) {
+                            ForEach(Array(candidates.enumerated()), id: \.offset) { _, image in
+                                Button {
+                                    selectCandidate(image)
+                                    dismiss()
+                                } label: {
+                                    Image(uiImage: image)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(height: 100)
+                                        .frame(maxWidth: .infinity)
+                                        .clipped()
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding()
+                    }
+                }
+            }
+            .navigationTitle("サムネイルを選択")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("閉じる") { dismiss() }
+                }
+            }
+            .task {
+                candidates = await loadCandidates { candidateCount, maximumCount in
+                    generatedCandidateCount = candidateCount
+                    maximumCandidateCount = maximumCount
+                }
+                isLoading = false
+            }
+        }
     }
 }
 

@@ -14,16 +14,20 @@ final class WatchHistoryListViewModel {
 
     private let watchHistoryRepository: any WatchHistoryRepository
     private let remoteConnectionRepository: (any RemoteConnectionRepository)?
-    private let mediaThumbnailProvider: MediaThumbnailProvider?
+    private let mediaThumbnailProvider: (any MediaThumbnailProviding)?
+    private var thumbnailCacheObserver: ThumbnailCacheClearObserver?
 
     init(
         watchHistoryRepository: any WatchHistoryRepository,
         remoteConnectionRepository: (any RemoteConnectionRepository)? = nil,
-        mediaThumbnailProvider: MediaThumbnailProvider? = nil
+        mediaThumbnailProvider: (any MediaThumbnailProviding)? = nil
     ) {
         self.watchHistoryRepository = watchHistoryRepository
         self.remoteConnectionRepository = remoteConnectionRepository
         self.mediaThumbnailProvider = mediaThumbnailProvider
+        self.thumbnailCacheObserver = ThumbnailCacheClearObserver { [weak self] in
+            self?.thumbnails.removeAll()
+        }
     }
 
     func load(sourceID: String? = nil) async {
@@ -112,6 +116,7 @@ final class WatchHistoryListViewModel {
     }
 
     func loadThumbnail(for history: WatchHistory) async {
+        guard !Task.isCancelled else { return }
         let key = thumbnailKey(for: history)
         guard thumbnails[key] == nil else { return }
         if let mediaThumbnailProvider,
@@ -120,6 +125,7 @@ final class WatchHistoryListViewModel {
             item: history.toDirectoryItem(),
             connection: sourceConnection(for: history)
            ) {
+            guard !Task.isCancelled else { return }
             thumbnails[key] = img
             return
         }

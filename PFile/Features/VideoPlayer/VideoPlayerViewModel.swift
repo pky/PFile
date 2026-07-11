@@ -220,7 +220,11 @@ final class VideoPlayerViewModel: NSObject {
         streamInput = nil
         let client = streamClient
         streamClient = nil
-        Task { try? await client?.disconnectShare() }
+        Task {
+            try? await SMB2OperationGate.runAsync {
+                try await client?.disconnectShare()
+            }
+        }
         tearDownAVPlayer()
 #endif
     }
@@ -556,7 +560,11 @@ final class VideoPlayerViewModel: NSObject {
         streamInput = nil
         let client = streamClient
         streamClient = nil
-        Task { try? await client?.disconnectShare() }
+        Task {
+            try? await SMB2OperationGate.runAsync {
+                try await client?.disconnectShare()
+            }
+        }
         tearDownAVPlayer()
 #endif
         startupPlaybackPath = nil
@@ -671,13 +679,17 @@ final class VideoPlayerViewModel: NSObject {
             let credential = try smbClientManager.loadCredential(for: connection)
             let shareName = credential.shareName == "/" ? "" : credential.shareName
             let client = try smbClientManager.makeDedicatedClient(for: connection)
-            try await client.connectShare(name: shareName)
+            try await SMB2OperationGate.runAsync {
+                try await client.connectShare(name: shareName)
+            }
 
             let resolvedPath = await resolveSMBStreamPath(client: client, path: item.path)
             let fileSize = try await resolveSMBStreamFileSize(client: client, path: resolvedPath)
 
             if Task.isCancelled {
-                try? await client.disconnectShare()
+                try? await SMB2OperationGate.runAsync {
+                    try await client.disconnectShare()
+                }
                 return
             }
 
@@ -725,7 +737,11 @@ final class VideoPlayerViewModel: NSObject {
         streamInput = nil
         let oldStreamClient = streamClient
         streamClient = nil
-        Task { try? await oldStreamClient?.disconnectShare() }
+        Task {
+            try? await SMB2OperationGate.runAsync {
+                try await oldStreamClient?.disconnectShare()
+            }
+        }
 
         avStreamClient = client
         let contentType = Self.avContentType(for: item)
@@ -799,7 +815,11 @@ final class VideoPlayerViewModel: NSObject {
         usesAVPlayer = false
         let client = avStreamClient
         avStreamClient = nil
-        Task { try? await client?.disconnectShare() }
+        Task {
+            try? await SMB2OperationGate.runAsync {
+                try await client?.disconnectShare()
+            }
+        }
     }
 
     /// AVPlayer の buffering をデバウンスしてスピナーの点滅を抑える。
@@ -824,7 +844,9 @@ final class VideoPlayerViewModel: NSObject {
             let credential = try smbClientManager.loadCredential(for: connection)
             let shareName = credential.shareName == "/" ? "" : credential.shareName
             let client = try smbClientManager.makeDedicatedClient(for: connection)
-            try await client.connectShare(name: shareName)
+            try await SMB2OperationGate.runAsync {
+                try await client.connectShare(name: shareName)
+            }
 
             let server = SMBStreamingServer(ownerID: playerID)
             try await server.start(client: client, filePath: item.path, fileSize: item.size)
@@ -876,7 +898,11 @@ final class VideoPlayerViewModel: NSObject {
         streamInput = nil
         let oldClient = streamClient
         streamClient = nil
-        Task { try? await oldClient?.disconnectShare() }
+        Task {
+            try? await SMB2OperationGate.runAsync {
+                try await oldClient?.disconnectShare()
+            }
+        }
 
         let networkCaching = 300
         let fileCaching = 300
@@ -925,7 +951,11 @@ final class VideoPlayerViewModel: NSObject {
         streamInput = nil
         let oldClient = streamClient
         streamClient = nil
-        Task { try? await oldClient?.disconnectShare() }
+        Task {
+            try? await SMB2OperationGate.runAsync {
+                try await oldClient?.disconnectShare()
+            }
+        }
 
         let sanitizedURL = sanitizeURL(url)
         let cachingPolicy = VideoPlayerCachingPolicy.directSMB(fileSize: item.size)
@@ -1017,7 +1047,9 @@ final class VideoPlayerViewModel: NSObject {
             let credential = try smbClientManager.loadCredential(for: connection)
             let shareName = credential.shareName == "/" ? "" : credential.shareName
             let client = try smbClientManager.makeDedicatedClient(for: connection)
-            try await client.connectShare(name: shareName)
+            try await SMB2OperationGate.runAsync {
+                try await client.connectShare(name: shareName)
+            }
 
             let resolvedPath = await resolveSMBStreamPath(client: client, path: item.path)
             let fileSize = try await resolveSMBStreamFileSize(client: client, path: resolvedPath)
@@ -1031,7 +1063,9 @@ final class VideoPlayerViewModel: NSObject {
 
             if Task.isCancelled {
                 stream.close()
-                try? await client.disconnectShare()
+                try? await SMB2OperationGate.runAsync {
+                    try await client.disconnectShare()
+                }
                 return
             }
 
@@ -1061,7 +1095,11 @@ final class VideoPlayerViewModel: NSObject {
     ) {
         streamInput?.close()
         let oldClient = streamClient
-        Task { try? await oldClient?.disconnectShare() }
+        Task {
+            try? await SMB2OperationGate.runAsync {
+                try await oldClient?.disconnectShare()
+            }
+        }
 
         streamInput = stream
         streamClient = client

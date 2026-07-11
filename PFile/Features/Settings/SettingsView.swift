@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var viewModel: SettingsViewModel?
 
     @State private var showClearCacheAlert = false
+    @State private var showClearCacheCompleteAlert = false
     @State private var showDeleteHistoryAlert = false
     @State private var showRestoreLatestBackupAlert = false
     @State private var showRestoreBackupFileImporter = false
@@ -56,11 +57,19 @@ struct SettingsView: View {
         }
         .alert("サムネイルキャッシュを削除", isPresented: $showClearCacheAlert) {
             Button("クリア", role: .destructive) {
-                Task { await viewModel.clearThumbnailCache() }
+                Task {
+                    await viewModel.clearThumbnailCache()
+                    showClearCacheCompleteAlert = true
+                }
             }
             Button("キャンセル", role: .cancel) {}
         } message: {
             Text("サムネイルキャッシュをすべて削除しますか？次回表示時に再生成されます。")
+        }
+        .alert("削除完了", isPresented: $showClearCacheCompleteAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(viewModel.thumbnailCacheStatusMessage ?? "サムネイルキャッシュを削除しました。")
         }
         .alert("視聴履歴を削除", isPresented: $showDeleteHistoryAlert) {
             Button("すべて削除", role: .destructive) {
@@ -196,21 +205,18 @@ struct SettingsView: View {
     @ViewBuilder
     private func cacheSection(viewModel: SettingsViewModel) -> some View {
         Section("サムネイルキャッシュ") {
-            Picker("容量上限", selection: Binding(
-                get: { viewModel.thumbnailCacheLimitMB },
-                set: { viewModel.thumbnailCacheLimitMB = $0 }
-            )) {
-                ForEach(SettingsViewModel.thumbnailCacheLimitOptions, id: \.self) { mb in
-                    Text(cacheLimitLabel(mb: mb)).tag(mb)
-                }
-            }
-
             Button(role: .destructive) {
                 showClearCacheAlert = true
             } label: {
                 Label("サムネイルキャッシュを削除", systemImage: "trash")
             }
             .disabled(viewModel.isClearing)
+
+            if let thumbnailCacheStatusMessage = viewModel.thumbnailCacheStatusMessage {
+                Text(thumbnailCacheStatusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -375,10 +381,6 @@ struct SettingsView: View {
     }
 
     // MARK: - Helpers
-
-    private func cacheLimitLabel(mb: Int) -> String {
-        mb >= 1024 ? "\(mb / 1024)GB" : "\(mb)MB"
-    }
 
     @MainActor
     private func exportBackupToExternalLocation(viewModel: SettingsViewModel) async {

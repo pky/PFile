@@ -5,6 +5,29 @@ import Network
 #if !targetEnvironment(simulator)
 import AMSMB2
 
+private actor SMBStreamingReadGate {
+    private var isLocked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !isLocked {
+            isLocked = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            isLocked = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
 /// AMSMB2 でファイルを読み込み、VLCKit に渡すためのローカル HTTP サーバー。
 /// VLCKit の SMB クライアントは SMBv1 ベースのため Samba 新バージョンと互換性がない場合がある。
 /// このサーバーを経由することで SMB アクセスを AMSMB2（SMBv2/v3）に任せ、VLCKit には HTTP を渡す。
@@ -22,8 +45,12 @@ final class SMBStreamingServer {
     private var activeReadCount: Int = 0
     private var activeConnections: [Int: NWConnection] = [:]
     private var activeTasks: [Int: Task<Void, Never>] = [:]
+    private var isStopping = false
+    private var pendingDisconnectClient: SMB2Manager?
 
     private let queue = DispatchQueue(label: "jp.pky.pfile.smb-streaming", qos: .userInitiated)
+    private let readLifecycleLock = NSLock()
+    private let readGate = SMBStreamingReadGate()
     // 通常再生は大きめ、seek 直後は小さめのチャンクにして古い読み込みを捨てやすくする。
     private let maxChunkSize: UInt64 = 2 * 1024 * 1024 // 2MB
     private let seekHeadChunkSize: UInt64 = 256 * 1024 // 256KB
@@ -87,8 +114,19 @@ final class SMBStreamingServer {
     }
 
     func stop() {
-        let activeRequestsAtStop = activeRequestCount
+        readLifecycleLock.lock()
+        guard !isStopping else {
+            readLifecycleLock.unlock()
+            return
+        }
+        isStopping = true
         let activeReadsAtStop = activeReadCount
+        let client = smbClient
+        smbClient = nil
+        pendingDisconnectClient = client
+        readLifecycleLock.unlock()
+
+        let activeRequestsAtStop = activeRequestCount
         let activeConnectionsAtStop = activeConnections.count
         let activeTasksAtStop = activeTasks.count
         if activeRequestsAtStop > 0 || activeReadsAtStop > 0 {
@@ -103,17 +141,14 @@ final class SMBStreamingServer {
         listener?.cancel()
         listener = nil
         localURL = nil
-        let client = smbClient
-        smbClient = nil
         let connections = Array(activeConnections.values)
         activeConnections.removeAll()
         let tasks = Array(activeTasks.values)
         activeTasks.removeAll()
         for task in tasks { task.cancel() }
         for connection in connections { connection.cancel() }
-        print("[SMBStreamingServer] playerID: \(ownerID) | Stopped | activeRequests: \(activeRequestCount) | activeReads: \(activeReadCount)")
-        // 専用接続を切断（FileBrowserのキャッシュ接続とは別インスタンス）
-        Task { try? await client?.disconnectShare() }
+        print("[SMBStreamingServer] playerID: \(ownerID) | Stopped | activeRequests: \(activeRequestCount) | activeReads: \(activeReadsAtStop)")
+        disconnectWhenIdle(reason: "stop")
     }
 
     // MARK: - 接続処理
@@ -191,11 +226,6 @@ final class SMBStreamingServer {
     }
 
     private func sendGet(range: ClosedRange<UInt64>?, on connection: NWConnection, requestID: Int) async {
-        guard let client = smbClient else {
-            finishRequest(connection, requestID: requestID, reason: "missing_smb_client")
-            return
-        }
-
         do {
             let response = try SMBHTTPResponsePlanner.makePlan(fileSize: fileSize, requestedRange: range)
             let header = buildHeader(
@@ -220,11 +250,27 @@ final class SMBStreamingServer {
                 let upperBound = min(bodyRange.upperBound, lowerBound + chunkSize - 1)
                 let chunkRange = lowerBound...upperBound
 
-                activeReadCount += 1
-                let data = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
-                    client.contents(atPath: smbFilePath, range: chunkRange, progress: nil) { cont.resume(with: $0) }
+                await readGate.acquire()
+                var didBeginRead = false
+                let data: Data
+                do {
+                    try Task.checkCancellation()
+                    guard let client = beginRead() else {
+                        throw CancellationError()
+                    }
+                    didBeginRead = true
+                    data = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+                        client.contents(atPath: smbFilePath, range: chunkRange, progress: nil) { cont.resume(with: $0) }
+                    }
+                } catch {
+                    if didBeginRead {
+                        endRead(reason: "read_failed")
+                    }
+                    await readGate.release()
+                    throw error
                 }
-                activeReadCount = max(0, activeReadCount - 1)
+                endRead(reason: "read_finished")
+                await readGate.release()
 
                 try Task.checkCancellation()
                 try await sendBytes(data, on: connection)
@@ -249,7 +295,7 @@ Connection: close\r
         } catch is CancellationError {
             finishRequest(connection, requestID: requestID, reason: "cancelled")
         } catch {
-            print("[SMBStreamingServer] playerID: \(ownerID) | request[\(requestID)] read error: \(error) | activeReads: \(activeReadCount)")
+            print("[SMBStreamingServer] playerID: \(ownerID) | request[\(requestID)] read error: \(error) | activeReads: \(currentActiveReadCount())")
             sendError(500, on: connection, requestID: requestID, reason: "read_error")
         }
     }
@@ -375,14 +421,52 @@ Connection: close\r
         activeConnections.removeValue(forKey: requestID)
         activeTasks.removeValue(forKey: requestID)
         activeRequestCount = max(0, activeRequestCount - 1)
-        print("[SMBStreamingServer] playerID: \(ownerID) | request[\(requestID)] closed | reason: \(reason) | activeRequests: \(activeRequestCount) | activeReads: \(activeReadCount)")
+        print("[SMBStreamingServer] playerID: \(ownerID) | request[\(requestID)] closed | reason: \(reason) | activeRequests: \(activeRequestCount) | activeReads: \(currentActiveReadCount())")
+        disconnectWhenIdle(reason: reason)
     }
 
     private func completeRequest(on connection: NWConnection, requestID: Int, reason: String) {
         guard activeConnections[requestID] != nil else { return }
         activeTasks.removeValue(forKey: requestID)
-        print("[SMBStreamingServer] playerID: \(ownerID) | request[\(requestID)] completed | reason: \(reason) | activeRequests: \(activeRequestCount) | activeReads: \(activeReadCount)")
+        print("[SMBStreamingServer] playerID: \(ownerID) | request[\(requestID)] completed | reason: \(reason) | activeRequests: \(activeRequestCount) | activeReads: \(currentActiveReadCount())")
         receiveRequest(on: connection, requestID: requestID)
+    }
+
+    private func disconnectWhenIdle(reason: String) {
+        readLifecycleLock.lock()
+        guard isStopping, activeReadCount == 0, let client = pendingDisconnectClient else {
+            readLifecycleLock.unlock()
+            return
+        }
+        pendingDisconnectClient = nil
+        readLifecycleLock.unlock()
+        Task {
+            try? await SMB2OperationGate.runAsync {
+                try await client.disconnectShare()
+            }
+            print("[SMBStreamingServer] playerID: \(ownerID) | Disconnected SMB client | reason: \(reason)")
+        }
+    }
+
+    private func beginRead() -> SMB2Manager? {
+        readLifecycleLock.lock()
+        defer { readLifecycleLock.unlock() }
+        guard !isStopping, let client = smbClient else { return nil }
+        activeReadCount += 1
+        return client
+    }
+
+    private func endRead(reason: String) {
+        readLifecycleLock.lock()
+        activeReadCount = max(0, activeReadCount - 1)
+        readLifecycleLock.unlock()
+        disconnectWhenIdle(reason: reason)
+    }
+
+    private func currentActiveReadCount() -> Int {
+        readLifecycleLock.lock()
+        defer { readLifecycleLock.unlock() }
+        return activeReadCount
     }
 
     // MARK: - ユーティリティ

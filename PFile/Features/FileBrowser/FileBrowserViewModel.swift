@@ -47,13 +47,13 @@ final class FileBrowserViewModel {
     private let connection: RemoteConnection
     private let fileRepository: any FileRepository
     private let sortService = SortService()
-    private let mediaThumbnailProvider: MediaThumbnailProvider?
+    private let mediaThumbnailProvider: (any MediaThumbnailProviding)?
     private let thumbnailService: ThumbnailService?
     private let smbClientManager: SMBClientManager?
     private let mediaListRepository: (any MediaListRepository)?
     private let reconnectHandler: (() -> Void)?
-    private var prefetchTask: Task<Void, Never>?
     private var warmUpTask: Task<Void, Never>?
+    private var thumbnailCacheObserver: ThumbnailCacheClearObserver?
     private var isNetworkWorkSuspended = false
 
     private static let sortKeyDefaultsKey        = "FileBrowser.sortKey"
@@ -74,7 +74,7 @@ final class FileBrowserViewModel {
     init(
         connection: RemoteConnection,
         fileRepository: any FileRepository,
-        mediaThumbnailProvider: MediaThumbnailProvider? = nil,
+        mediaThumbnailProvider: (any MediaThumbnailProviding)? = nil,
         thumbnailService: ThumbnailService? = nil,
         smbClientManager: SMBClientManager? = nil,
         mediaListRepository: (any MediaListRepository)? = nil,
@@ -91,6 +91,9 @@ final class FileBrowserViewModel {
             { manager.disconnect(for: connection.id) }
         }
         self.currentPath = startPath ?? connection.startPath
+        self.thumbnailCacheObserver = ThumbnailCacheClearObserver { [weak self] in
+            self?.thumbnails.removeAll()
+        }
 
         if let raw = UserDefaults.standard.string(forKey: Self.sortKeyDefaultsKey),
            let key = SortKey(rawValue: raw) { self.sortKey = key }
@@ -104,8 +107,6 @@ final class FileBrowserViewModel {
 
     func loadDirectory() async {
         isNetworkWorkSuspended = false
-        prefetchTask?.cancel()
-        prefetchTask = nil
         isLoading = true
         defer { isLoading = false }
         do {
@@ -113,7 +114,6 @@ final class FileBrowserViewModel {
             items = sortService.sort(fetched, by: sortKey, order: sortOrder, foldersFirst: foldersFirst)
             errorMessage = nil
             startVideoFileWarmUp()
-            startThumbnailPrefetch()
         } catch {
             items = []
             errorMessage = error.localizedDescription
@@ -142,11 +142,16 @@ final class FileBrowserViewModel {
 
     func prepareForBackground() {
         isNetworkWorkSuspended = true
-        prefetchTask?.cancel()
-        prefetchTask = nil
         warmUpTask?.cancel()
         warmUpTask = nil
         reconnectHandler?()
+    }
+
+    /// タブへ戻ったとき、表示セルのサムネイル生成を再開可能にする。
+    func resumeNetworkWork() {
+        guard isNetworkWorkSuspended else { return }
+        isNetworkWorkSuspended = false
+        startVideoFileWarmUp()
     }
 
     func applySortChange() async {
@@ -164,6 +169,7 @@ final class FileBrowserViewModel {
 
     /// サムネイルを非同期でロードし thumbnails に反映する
     func loadThumbnail(for item: DirectoryItem) async {
+        guard !Task.isCancelled else { return }
         let key = cacheKey(for: item)
 
         // すでに取得済みならスキップ
@@ -183,9 +189,13 @@ final class FileBrowserViewModel {
             item: item,
             connection: connection
            ) {
+            guard !Task.isCancelled, !isNetworkWorkSuspended else { return }
             thumbnails[key] = image
             return
         }
+
+        // Provider が存在する場合は同じ ThumbnailService を再度呼ばない。
+        if mediaThumbnailProvider != nil { return }
 
         guard item.isVideo,
               let thumbnailService,
@@ -201,22 +211,33 @@ final class FileBrowserViewModel {
             connection: connection,
             smbClientManager: smbClientManager
         ) {
+            guard !Task.isCancelled, !isNetworkWorkSuspended else { return }
             thumbnails[key] = image
         }
     }
 
-    /// ディレクトリ読み込み後にバックグラウンドで全動画のサムネイルを逐次生成する
-    private func startThumbnailPrefetch() {
-        guard thumbnailService != nil, smbClientManager != nil else { return }
-        let videoItems = items.filter { $0.isVideo }
-        guard !videoItems.isEmpty else { return }
+    /// 指定した動画1本から、ユーザーが選べるサムネイル候補を生成する。
+    func generateThumbnailChoices(
+        for item: DirectoryItem,
+        progress: @escaping ThumbnailChoiceProgressHandler = { _, _ in }
+    ) async -> [UIImage] {
+        guard item.isVideo,
+              !isNetworkWorkSuspended,
+              let thumbnailService,
+              let smbClientManager else { return [] }
+        return await thumbnailService.generateVideoThumbnailChoices(
+            for: item,
+            connection: connection,
+            smbClientManager: smbClientManager,
+            progress: progress
+        )
+    }
 
-        prefetchTask = Task { [weak self] in
-            for item in videoItems {
-                guard let self, !Task.isCancelled else { return }
-                await self.loadThumbnail(for: item)
-            }
-        }
+    /// 選択した画像を共有キャッシュと現在の表示へ反映する。
+    func selectThumbnail(_ image: UIImage, for item: DirectoryItem) {
+        let key = cacheKey(for: item)
+        thumbnailService?.store(image, for: key)
+        thumbnails[key] = image
     }
 
     private func startVideoFileWarmUp() {

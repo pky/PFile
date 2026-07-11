@@ -14,15 +14,26 @@ enum SMBHTTPResponsePlanner {
     }
 
     static func parseRangeHeader(_ header: String, fileSize: UInt64) -> ClosedRange<UInt64>? {
-        // "Range: bytes=X-Y" または "Range: bytes=X-"
+        // "Range: bytes=X-Y"、"Range: bytes=X-"、"Range: bytes=-N"
         guard let eqIdx = header.firstIndex(of: "=") else { return nil }
         let unit = header[..<eqIdx].lowercased().trimmingCharacters(in: .whitespaces)
         guard unit.hasSuffix("bytes") else { return nil }
         let value = String(header[header.index(after: eqIdx)...]).trimmingCharacters(in: .whitespaces)
         let parts = value.components(separatedBy: "-")
-        guard parts.count == 2,
-              let start = UInt64(parts[0].trimmingCharacters(in: .whitespaces)) else { return nil }
-        if let end = UInt64(parts[1].trimmingCharacters(in: .whitespaces)) {
+        guard parts.count == 2 else { return nil }
+
+        let startValue = parts[0].trimmingCharacters(in: .whitespaces)
+        let endValue = parts[1].trimmingCharacters(in: .whitespaces)
+        if startValue.isEmpty {
+            guard fileSize > 0,
+                  let suffixLength = UInt64(endValue),
+                  suffixLength > 0 else { return nil }
+            let start = suffixLength >= fileSize ? 0 : fileSize - suffixLength
+            return start...(fileSize - 1)
+        }
+
+        guard let start = UInt64(startValue) else { return nil }
+        if let end = UInt64(endValue) {
             return start...end
         } else {
             let end = fileSize > 0 ? fileSize - 1 : 0

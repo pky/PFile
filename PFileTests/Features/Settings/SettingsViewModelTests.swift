@@ -41,10 +41,6 @@ final class SettingsViewModelTests: XCTestCase {
 
     // MARK: - デフォルト値
 
-    func test_thumbnailCacheLimitMB_defaultIs500() {
-        XCTAssertEqual(sut.thumbnailCacheLimitMB, 500)
-    }
-
     func test_resumePlayback_defaultIsTrue() {
         XCTAssertTrue(sut.resumePlayback)
     }
@@ -94,6 +90,8 @@ final class SettingsViewModelTests: XCTestCase {
     func test_clearThumbnailCache_callsClearCache() async {
         await sut.clearThumbnailCache()
         XCTAssertTrue(mockThumbnailService.clearCacheCalled)
+        XCTAssertTrue(mockWatchHistoryRepository.clearThumbnailDataCalled)
+        XCTAssertEqual(sut.thumbnailCacheStatusMessage, "サムネイルキャッシュを削除しました（キャッシュ3件、履歴0件）")
     }
 
     // MARK: - deleteAllWatchHistory
@@ -170,8 +168,9 @@ final class SettingsViewModelTests: XCTestCase {
 final class MockThumbnailService: ThumbnailServiceProtocol {
     var clearCacheCalled = false
 
-    func clearCache() {
+    func clearCache() -> Int {
         clearCacheCalled = true
+        return 3
     }
 }
 

@@ -31,7 +31,10 @@ final class MediaListDetailViewModel {
 
     private let repository: any MediaListRepository
     private let remoteConnectionRepository: (any RemoteConnectionRepository)?
-    private let mediaThumbnailProvider: MediaThumbnailProvider?
+    private let mediaThumbnailProvider: (any MediaThumbnailProviding)?
+    private let thumbnailService: ThumbnailService?
+    private let smbClientManager: SMBClientManager?
+    private var thumbnailCacheObserver: ThumbnailCacheClearObserver?
     private static let sortKeyDefaultsKey = "MediaListDetail.sortKey"
     private static let sortOrderDefaultsKey = "MediaListDetail.sortOrder"
 
@@ -39,12 +42,19 @@ final class MediaListDetailViewModel {
         list: MediaList,
         repository: any MediaListRepository,
         remoteConnectionRepository: (any RemoteConnectionRepository)? = nil,
-        mediaThumbnailProvider: MediaThumbnailProvider? = nil
+        mediaThumbnailProvider: (any MediaThumbnailProviding)? = nil,
+        thumbnailService: ThumbnailService? = nil,
+        smbClientManager: SMBClientManager? = nil
     ) {
         self.list = list
         self.repository = repository
         self.remoteConnectionRepository = remoteConnectionRepository
         self.mediaThumbnailProvider = mediaThumbnailProvider
+        self.thumbnailService = thumbnailService
+        self.smbClientManager = smbClientManager
+        self.thumbnailCacheObserver = ThumbnailCacheClearObserver { [weak self] in
+            self?.thumbnails.removeAll()
+        }
         if let raw = UserDefaults.standard.string(forKey: Self.sortKeyDefaultsKey),
            let saved = MediaListSortKey(rawValue: raw) {
             sortKey = saved
@@ -99,6 +109,7 @@ final class MediaListDetailViewModel {
     }
 
     func loadThumbnail(for file: MediaFile) async {
+        guard !Task.isCancelled else { return }
         let key = cacheKey(for: file)
         guard thumbnails[key] == nil, let mediaThumbnailProvider else { return }
         let item = file.toDirectoryItem()
@@ -108,7 +119,37 @@ final class MediaListDetailViewModel {
             item: item,
             connection: connection
         ) else { return }
+        guard !Task.isCancelled else { return }
         thumbnails[key] = img
+    }
+
+    func canChooseThumbnail(for file: MediaFile) -> Bool {
+        file.itemTypeRaw == "video"
+            && sourceConnection(for: file) != nil
+            && thumbnailService != nil
+            && smbClientManager != nil
+    }
+
+    func generateThumbnailChoices(
+        for file: MediaFile,
+        progress: @escaping ThumbnailChoiceProgressHandler = { _, _ in }
+    ) async -> [UIImage] {
+        guard canChooseThumbnail(for: file),
+              let connection = sourceConnection(for: file),
+              let thumbnailService,
+              let smbClientManager else { return [] }
+        return await thumbnailService.generateVideoThumbnailChoices(
+            for: file.toDirectoryItem(),
+            connection: connection,
+            smbClientManager: smbClientManager,
+            progress: progress
+        )
+    }
+
+    func selectThumbnail(_ image: UIImage, for file: MediaFile) {
+        let key = cacheKey(for: file)
+        thumbnailService?.store(image, for: key)
+        thumbnails[key] = image
     }
 
     func applySortChange() {

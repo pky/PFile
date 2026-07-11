@@ -129,6 +129,15 @@ final class WatchHistoryRepositoryImpl: WatchHistoryRepository {
         }
     }
 
+    func clearThumbnailData() async throws -> Int {
+        let all = try context.fetch(FetchDescriptor<WatchHistory>())
+        let historiesWithThumbnail = all.filter { $0.thumbnailData != nil }
+        guard !historiesWithThumbnail.isEmpty else { return 0 }
+        historiesWithThumbnail.forEach { $0.thumbnailData = nil }
+        try context.save()
+        return historiesWithThumbnail.count
+    }
+
     func delete(_ history: WatchHistory) async throws {
         context.delete(history)
         try context.save()

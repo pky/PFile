@@ -12,6 +12,7 @@ struct MediaListsView: View {
     @State private var detailViewModel: MediaListDetailViewModel?
     @State private var connections: [UUID: RemoteConnection] = [:]
     @State private var selectedRoute: MediaViewerRoute?
+    @State private var thumbnailChoiceFile: MediaFile?
 
     // アラート
     @State private var showCreateAlert = false
@@ -47,6 +48,19 @@ struct MediaListsView: View {
         .navigationTitle("リスト")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarItems() }
+        .sheet(item: $thumbnailChoiceFile) { file in
+            if let detailViewModel {
+                ThumbnailChoiceView(
+                    item: file.toDirectoryItem(),
+                    loadCandidates: { progress in
+                        await detailViewModel.generateThumbnailChoices(for: file, progress: progress)
+                    },
+                    selectCandidate: { image in
+                        detailViewModel.selectThumbnail(image, for: file)
+                    }
+                )
+            }
+        }
         .task {
             // 接続情報をまず読み込む
             await loadConnections()
@@ -215,6 +229,20 @@ struct MediaListsView: View {
                     .task(id: file.id) {
                         await detailViewModel.loadThumbnail(for: file)
                     }
+                    .contextMenu {
+                        if detailViewModel.canChooseThumbnail(for: file) {
+                            Button {
+                                thumbnailChoiceFile = file
+                            } label: {
+                                Label("サムネイルを選び直す", systemImage: "photo.on.rectangle.angled")
+                            }
+                        }
+                        Button(role: .destructive) {
+                            Task { await detailViewModel.removeFile(file) }
+                        } label: {
+                            Label("削除", systemImage: "trash")
+                        }
+                    }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button(role: .destructive) {
                             Task { await detailViewModel.removeFile(file) }
@@ -324,7 +352,14 @@ struct MediaListsView: View {
 
     private func selectList(_ list: MediaList) async {
         selectedListId = list.id
-        let vm = MediaListDetailViewModel(list: list, repository: appEnvironment.mediaListRepository)
+        let vm = MediaListDetailViewModel(
+            list: list,
+            repository: appEnvironment.mediaListRepository,
+            remoteConnectionRepository: appEnvironment.remoteConnectionRepository,
+            mediaThumbnailProvider: appEnvironment.mediaThumbnailProvider,
+            thumbnailService: appEnvironment.thumbnailService,
+            smbClientManager: appEnvironment.smbClientManager
+        )
         detailViewModel = vm
         await vm.load()
     }

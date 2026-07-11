@@ -121,7 +121,9 @@ final class SMBFileRepository: FileRepository {
     // MARK: - Private
 
     private func connectShare(_ client: SMB2Manager) async throws {
-        try await client.connectShare(name: shareName)
+        try await SMB2OperationGate.runAsync { [self] in
+            try await client.connectShare(name: self.shareName)
+        }
     }
 
     private func connectedClient() async throws -> SMB2Manager {

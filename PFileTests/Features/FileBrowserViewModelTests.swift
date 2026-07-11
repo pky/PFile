@@ -1,6 +1,7 @@
 @testable import PFile
 import Foundation
 import Testing
+import UIKit
 
 @MainActor
 struct FileBrowserViewModelTests {
@@ -150,6 +151,153 @@ struct FileBrowserViewModelTests {
         await vm.navigate(to: file)
 
         #expect(vm.currentPath == originalPath)
+    }
+
+    // MARK: - thumbnail
+
+    @Test("ブラウズはキャッシュ未命中時にサムネイル生成を試みる")
+    func loadThumbnail_remoteBrowse_callsProviderLoad() async {
+        let connection = ModelFactory.makeConnection()
+        let repo = MockFileRepository()
+        let provider = MockMediaThumbnailProvider()
+        let item = DirectoryItem(
+            name: "movie.mp4",
+            path: "/movie.mp4",
+            itemType: .video,
+            size: nil,
+            modifiedAt: nil,
+            createdAt: nil
+        )
+        let vm = FileBrowserViewModel(
+            connection: connection,
+            fileRepository: repo,
+            mediaThumbnailProvider: provider
+        )
+
+        await vm.loadThumbnail(for: item)
+
+        #expect(provider.cacheCalls.map(\.itemPath) == ["/movie.mp4"])
+        #expect(provider.loadCalls.count == 1)
+        #expect(provider.loadCalls.first?.source.id == ContentSource.remote(connection.id).id)
+        #expect(provider.loadCalls.first?.itemPath == "/movie.mp4")
+        #expect(provider.loadCalls.first?.connectionID == connection.id)
+    }
+
+    @Test("ディレクトリ読み込みでは画面外動画を先行生成しない")
+    func loadDirectory_doesNotPrefetchOffscreenVideos() async {
+        let connection = ModelFactory.makeConnection()
+        let repo = MockFileRepository()
+        let provider = MockMediaThumbnailProvider()
+        provider.loadedImage = UIImage()
+        repo.items = [
+            DirectoryItem(
+                name: "first.mp4",
+                path: "/first.mp4",
+                itemType: .video,
+                size: nil,
+                modifiedAt: nil,
+                createdAt: nil
+            ),
+            DirectoryItem(
+                name: "second.mp4",
+                path: "/second.mp4",
+                itemType: .video,
+                size: nil,
+                modifiedAt: nil,
+                createdAt: nil
+            ),
+        ]
+        let vm = FileBrowserViewModel(
+            connection: connection,
+            fileRepository: repo,
+            mediaThumbnailProvider: provider
+        )
+
+        await vm.loadDirectory()
+        try? await Task.sleep(for: .milliseconds(50))
+
+        #expect(provider.loadCalls.isEmpty)
+    }
+
+    @Test("選択した候補画像をサムネイルとして保存する")
+    func selectThumbnail_storesSelectedImage() {
+        let connection = ModelFactory.makeConnection()
+        let repo = MockFileRepository()
+        let service = ThumbnailService()
+        let provider = MediaThumbnailProvider(
+            thumbnailService: service,
+            smbClientManager: SMBClientManager()
+        )
+        let item = DirectoryItem(
+            name: "movie.mp4",
+            path: "/movie.mp4",
+            itemType: .video,
+            size: nil,
+            modifiedAt: nil,
+            createdAt: nil
+        )
+        let vm = FileBrowserViewModel(
+            connection: connection,
+            fileRepository: repo,
+            mediaThumbnailProvider: provider,
+            thumbnailService: service
+        )
+
+        vm.selectThumbnail(UIImage(), for: item)
+
+        #expect(vm.thumbnail(for: item) != nil)
+    }
+
+    @Test("SMB動画のProviderと生成サービスは同じキャッシュキーを使う")
+    func remoteVideoCacheKey_isSharedByProviderAndService() {
+        let connection = ModelFactory.makeConnection()
+        let service = ThumbnailService()
+        let provider = MediaThumbnailProvider(
+            thumbnailService: service,
+            smbClientManager: SMBClientManager()
+        )
+        let item = DirectoryItem(
+            name: "movie.mp4",
+            path: "/movie.mp4",
+            itemType: .video,
+            size: nil,
+            modifiedAt: nil,
+            createdAt: nil
+        )
+
+        #expect(
+            provider.cacheKey(source: .remote(connection.id), item: item)
+                == service.cacheKey(connection: connection, item: item)
+        )
+    }
+
+    @Test("ローカルブラウズはキャッシュ未命中時にサムネイル生成を試みる")
+    func loadThumbnail_localBrowse_callsProviderLoad() async {
+        let sourceID = UUID()
+        let provider = MockMediaThumbnailProvider()
+        let rootURL = URL(fileURLWithPath: "/tmp/PFileLocal")
+        let item = DirectoryItem(
+            name: "local.mp4",
+            path: "/tmp/PFileLocal/local.mp4",
+            itemType: .video,
+            size: nil,
+            modifiedAt: nil,
+            createdAt: nil
+        )
+        let vm = LocalFolderBrowserViewModel(
+            rootURL: rootURL,
+            currentPath: rootURL.path,
+            sourceID: sourceID,
+            mediaThumbnailProvider: provider
+        )
+
+        await vm.loadThumbnail(for: item)
+
+        #expect(provider.cacheCalls.map(\.itemPath) == ["/tmp/PFileLocal/local.mp4"])
+        #expect(provider.loadCalls.count == 1)
+        #expect(provider.loadCalls.first?.source.id == ContentSource.localFolder(sourceID).id)
+        #expect(provider.loadCalls.first?.itemPath == "/tmp/PFileLocal/local.mp4")
+        #expect(provider.loadCalls.first?.connectionID == nil)
     }
 
     // MARK: - sort

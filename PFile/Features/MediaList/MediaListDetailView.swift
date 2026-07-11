@@ -14,6 +14,7 @@ struct MediaListDetailView: View {
     @State private var renameText = ""
     @State private var editMode: EditMode = .inactive
     @State private var selectedFileIDs: Set<UUID> = []
+    @State private var thumbnailChoiceFile: MediaFile?
 
     var body: some View {
         Group {
@@ -68,6 +69,19 @@ struct MediaListDetailView: View {
             MediaViewerContainerView(route: route, onReturnHome: onReturnHome)
                 .environment(\.appEnvironment, appEnvironment)
         }
+        .sheet(item: $thumbnailChoiceFile) { file in
+            if let viewModel {
+                ThumbnailChoiceView(
+                    item: file.toDirectoryItem(),
+                    loadCandidates: { progress in
+                        await viewModel.generateThumbnailChoices(for: file, progress: progress)
+                    },
+                    selectCandidate: { image in
+                        viewModel.selectThumbnail(image, for: file)
+                    }
+                )
+            }
+        }
         .environment(\.editMode, $editMode)
         .onChange(of: editMode) { _, newValue in
             if newValue != .active {
@@ -99,7 +113,9 @@ struct MediaListDetailView: View {
             list: list,
             repository: appEnvironment.mediaListRepository,
             remoteConnectionRepository: appEnvironment.remoteConnectionRepository,
-            mediaThumbnailProvider: appEnvironment.mediaThumbnailProvider
+            mediaThumbnailProvider: appEnvironment.mediaThumbnailProvider,
+            thumbnailService: appEnvironment.thumbnailService,
+            smbClientManager: appEnvironment.smbClientManager
         )
     }
 
@@ -212,6 +228,22 @@ struct MediaListDetailView: View {
                     await viewModel.loadThumbnail(for: file)
                 }
                 .tag(file.id)
+                .contextMenu {
+                    if !isEditing {
+                        if viewModel.canChooseThumbnail(for: file) {
+                            Button {
+                                thumbnailChoiceFile = file
+                            } label: {
+                                Label("サムネイルを選び直す", systemImage: "photo.on.rectangle.angled")
+                            }
+                        }
+                        Button(role: .destructive) {
+                            Task { await viewModel.removeFile(file) }
+                        } label: {
+                            Label("削除", systemImage: "trash")
+                        }
+                    }
+                }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     if !isEditing {
                         Button(role: .destructive) {
@@ -255,6 +287,13 @@ struct MediaListDetailView: View {
                     }
                     .contextMenu {
                         if !isEditing {
+                            if viewModel.canChooseThumbnail(for: file) {
+                                Button {
+                                    thumbnailChoiceFile = file
+                                } label: {
+                                    Label("サムネイルを選び直す", systemImage: "photo.on.rectangle.angled")
+                                }
+                            }
                             Button(role: .destructive) {
                                 Task { await viewModel.removeFile(file) }
                             } label: {

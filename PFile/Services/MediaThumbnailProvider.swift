@@ -3,7 +3,17 @@ import ImageIO
 import Photos
 import UIKit
 
-final class MediaThumbnailProvider {
+protocol MediaThumbnailProviding {
+    func thumbnail(for source: ContentSource, item: DirectoryItem) -> UIImage?
+    func loadThumbnail(
+        for source: ContentSource,
+        item: DirectoryItem,
+        connection: RemoteConnection?
+    ) async -> UIImage?
+    func cacheKey(source: ContentSource, item: DirectoryItem) -> String
+}
+
+final class MediaThumbnailProvider: MediaThumbnailProviding {
     private let thumbnailService: ThumbnailService
     private let smbClientManager: SMBClientManager
 
@@ -35,7 +45,8 @@ final class MediaThumbnailProvider {
             image = await loadLocalThumbnail(path: item.path, isVideo: item.isVideo)
         case .remote:
             guard let connection, item.isVideo else { return nil }
-            image = await thumbnailService.generateVideoThumbnail(
+            // SMB動画は生成側が共通キーで保存するため、ここでは二重保存しない。
+            return await thumbnailService.generateVideoThumbnail(
                 for: item,
                 connection: connection,
                 smbClientManager: smbClientManager
@@ -49,7 +60,13 @@ final class MediaThumbnailProvider {
     }
 
     func cacheKey(source: ContentSource, item: DirectoryItem) -> String {
-        "\(source.id)|\(item.path)"
+        if case .remote(let connectionID) = source, item.isVideo {
+            return ThumbnailService.remoteVideoCacheKey(
+                connectionID: connectionID,
+                itemPath: item.path
+            )
+        }
+        return "\(source.id)|\(item.path)"
     }
 
     private func loadPhotoThumbnail(assetID: String) async -> UIImage? {

@@ -7,25 +7,16 @@ final class SettingsViewModel {
     // MARK: - UserDefaults Keys
 
     private enum Keys {
-        static let thumbnailCacheLimitMB = "Settings.thumbnailCacheLimitMB"
         static let defaultSortKey = "Settings.defaultSortKey"
         static let resumePlayback = "Settings.resumePlayback"
         // orientationMode は OrientationService が管理するため Keys 不要
     }
-
-    // MARK: - Thumbnail cache limit options
-
-    static let thumbnailCacheLimitOptions: [Int] = [100, 250, 500, 1024]
 
     // MARK: - Watch history limit options
 
     static let watchHistoryLimitOptions: [Int] = [50, 100, 200, 500]
 
     // MARK: - Settings properties
-
-    var thumbnailCacheLimitMB: Int = 500 {
-        didSet { UserDefaults.standard.set(thumbnailCacheLimitMB, forKey: Keys.thumbnailCacheLimitMB) }
-    }
 
     var defaultSortKey: String = "nameAsc" {
         didSet { UserDefaults.standard.set(defaultSortKey, forKey: Keys.defaultSortKey) }
@@ -78,6 +69,7 @@ final class SettingsViewModel {
     var removeAdsDisplayPrice: String?
     var purchaseStatusMessage: String?
     var backupStatusMessage: String?
+    var thumbnailCacheStatusMessage: String?
     var lastExportURL: URL?
     var lastRestoreSnapshotURL: URL?
     var backupDirectoryPath: String = ""
@@ -116,9 +108,6 @@ final class SettingsViewModel {
     private func loadFromUserDefaults() {
         let defaults = UserDefaults.standard
 
-        if let limit = defaults.object(forKey: Keys.thumbnailCacheLimitMB) as? Int {
-            thumbnailCacheLimitMB = limit
-        }
         if let key = defaults.string(forKey: Keys.defaultSortKey) {
             defaultSortKey = key
         }
@@ -140,7 +129,14 @@ final class SettingsViewModel {
     func clearThumbnailCache() async {
         isClearing = true
         defer { isClearing = false }
-        thumbnailService.clearCache()
+        let removedFileCount = thumbnailService.clearCache()
+        do {
+            let removedHistoryThumbnailCount = try await watchHistoryRepository.clearThumbnailData()
+            thumbnailCacheStatusMessage = "サムネイルキャッシュを削除しました（キャッシュ\(removedFileCount)件、履歴\(removedHistoryThumbnailCount)件）"
+        } catch {
+            thumbnailCacheStatusMessage = "キャッシュは削除しましたが、履歴サムネイルの削除に失敗しました"
+            errorMessage = error.localizedDescription
+        }
     }
 
     func deleteAllWatchHistory() async {

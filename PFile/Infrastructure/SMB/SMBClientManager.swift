@@ -41,7 +41,11 @@ final class SMBClientManager {
         clients[connection.id] = newClient
         lock.unlock()
 
-        Task { try? await oldClient?.disconnectShare() }
+        Task {
+            try? await SMB2OperationGate.runAsync {
+                try await oldClient?.disconnectShare()
+            }
+        }
         return newClient
     }
 
@@ -127,7 +131,11 @@ final class SMBClientManager {
         let client = clients[connectionId]
         clients.removeValue(forKey: connectionId)
         lock.unlock()
-        Task { try? await client?.disconnectShare() }
+        Task {
+            try? await SMB2OperationGate.runAsync {
+                try await client?.disconnectShare()
+            }
+        }
     }
 
     func disconnectAll() {
@@ -135,7 +143,13 @@ final class SMBClientManager {
         let all = Array(clients.values)
         clients.removeAll()
         lock.unlock()
-        Task { for c in all { try? await c.disconnectShare() } }
+        Task {
+            for c in all {
+                try? await SMB2OperationGate.runAsync {
+                    try await c.disconnectShare()
+                }
+            }
+        }
     }
 
     private func buildURL(host: String, port: Int, share: String) -> URL {
@@ -148,7 +162,9 @@ final class SMBClientManager {
     }
 
     private func warmUp(client: SMB2Manager, shareName: String, path: String) async throws {
-        try await client.connectShare(name: shareName)
+        try await SMB2OperationGate.runAsync {
+            try await client.connectShare(name: shareName)
+        }
         let directoryPath = normalizedRelativePath(path)
         _ = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[[URLResourceKey: any Sendable]], Error>) in
             client.contentsOfDirectory(atPath: directoryPath) { cont.resume(with: $0) }
@@ -161,13 +177,17 @@ final class SMBClientManager {
     }
 
     private func readFileHeader(client: SMB2Manager, shareName: String, path: String) async throws {
-        try await client.connectShare(name: shareName)
+        try await SMB2OperationGate.runAsync {
+            try await client.connectShare(name: shareName)
+        }
         let filePath = normalizedRelativePath(path)
         _ = try await client.contents(atPath: filePath, range: UInt64(0)..<UInt64(1024 * 1024))
     }
 
     private func warmUpFirstReadableFile(client: SMB2Manager, shareName: String, path: String) async throws {
-        try await client.connectShare(name: shareName)
+        try await SMB2OperationGate.runAsync {
+            try await client.connectShare(name: shareName)
+        }
         let rootPath = normalizedRelativePath(path)
         guard let filePath = try await findFirstReadableFilePath(client: client, path: rootPath, remainingDepth: 3) else {
             return

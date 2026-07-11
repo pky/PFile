@@ -1,5 +1,65 @@
 @testable import PFile
 import Testing
+import UIKit
+
+struct ThumbnailGenerationPolicyTests {
+
+    @Test("通常生成は10%地点と20%地点を使う")
+    func automaticGenerationUsesTenAndTwentyPercentPositions() {
+        #expect(ThumbnailGenerationPolicy.automaticPositions == [0.10, 0.20])
+    }
+
+    @Test("手動候補は通常生成より広い時間帯を使う")
+    func manualChoicesCoverVideoTimeline() {
+        #expect(ThumbnailGenerationPolicy.choicePositions.count == 6)
+        #expect(ThumbnailGenerationPolicy.supplementalChoicePositions.count == 6)
+        #expect(ThumbnailGenerationPolicy.choicePositions.first == 0.04)
+        #expect(ThumbnailGenerationPolicy.choicePositions.last == 0.92)
+        #expect(ThumbnailGenerationPolicy.maximumChoiceCount == 8)
+    }
+
+    @Test("通常生成は黒画像を保存対象にしない")
+    func automaticGenerationRejectsBlackImage() {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).image { context in
+            context.cgContext.setFillColor(UIColor.black.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        }
+
+        #expect(ThumbnailImageAnalyzer.isBlack(image))
+    }
+
+    @Test("通常生成は明るい画像を保存対象にする")
+    func automaticGenerationAcceptsVisibleImage() {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).image { context in
+            context.cgContext.setFillColor(UIColor.systemBlue.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        }
+
+        #expect(!ThumbnailImageAnalyzer.isBlack(image))
+    }
+
+    @Test("手動候補は単色グレー画像を除外する")
+    func manualChoicesRejectSolidGrayImage() {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).image { context in
+            context.cgContext.setFillColor(UIColor.gray.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        }
+
+        #expect(ThumbnailImageAnalyzer.isLowInformation(image))
+    }
+
+    @Test("手動候補は明暗差のある画像を採用する")
+    func manualChoicesAcceptDetailedImage() {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).image { context in
+            context.cgContext.setFillColor(UIColor.white.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 16, height: 32))
+            context.cgContext.setFillColor(UIColor.systemBlue.cgColor)
+            context.cgContext.fill(CGRect(x: 16, y: 0, width: 16, height: 32))
+        }
+
+        #expect(!ThumbnailImageAnalyzer.isLowInformation(image))
+    }
+}
 
 struct SMBHTTPResponsePlannerTests {
 
@@ -52,10 +112,22 @@ struct SMBHTTPResponsePlannerTests {
         #expect(range == 100...199)
     }
 
+    @Test("suffix Range をファイル末尾へ展開する")
+    func parsesSuffixRangeHeader() {
+        let range = SMBHTTPResponsePlanner.parseRangeHeader("Range: bytes=-500", fileSize: 1_000)
+        #expect(range == 500...999)
+    }
+
+    @Test("ファイルサイズを超える suffix Range は全体へ丸める")
+    func clampsSuffixRangeHeader() {
+        let range = SMBHTTPResponsePlanner.parseRangeHeader("Range: bytes=-1500", fileSize: 1_000)
+        #expect(range == 0...999)
+    }
+
     @Test("不正な Range ヘッダは nil を返す")
     func returnsNilForInvalidRangeHeader() {
         #expect(SMBHTTPResponsePlanner.parseRangeHeader("Range: items=0-10", fileSize: 1_000) == nil)
-        #expect(SMBHTTPResponsePlanner.parseRangeHeader("Range: bytes=-500", fileSize: 1_000) == nil)
+        #expect(SMBHTTPResponsePlanner.parseRangeHeader("Range: bytes=-0", fileSize: 1_000) == nil)
         #expect(SMBHTTPResponsePlanner.parseRangeHeader("Range: bytes=a-b", fileSize: 1_000) == nil)
     }
 }
