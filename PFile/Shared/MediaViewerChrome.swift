@@ -528,13 +528,14 @@ enum VideoResolutionFormatter {
     static func text(width: Double, height: Double) -> String? {
         guard width > 0, height > 0 else { return nil }
         let longSide = max(width, height)
-        let shortSide = min(width, height)
         let category: String
-        if longSide >= 3_840 || shortSide >= 2_160 {
+        if longSide >= 3_840 {
             category = "4K"
-        } else if longSide >= 1_920 || shortSide >= 1_080 {
+        } else if longSide >= 2_560 {
+            category = "WQHD"
+        } else if longSide >= 1_920 {
             category = "FHD"
-        } else if longSide >= 1_280 || shortSide >= 720 {
+        } else if longSide >= 1_280 {
             category = "HD"
         } else {
             category = "SD"

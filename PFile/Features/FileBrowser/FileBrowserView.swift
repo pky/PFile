@@ -7,11 +7,11 @@ struct FileBrowserView: View {
     @Environment(\.appEnvironment) private var appEnvironment
     @Environment(\.scenePhase) private var scenePhase
     let connection: RemoteConnection
+    @Binding var navigationPath: [String]
     var isActive: Bool = true
     var onConnectionUnavailable: (() -> Void)? = nil
     var onReturnHome: (() async -> Void)? = nil
 
-    @State private var navigationPath: [String] = []
     @State private var hasRestoredNavigationPath = false
     @State private var cachedViewModels: [String: FileBrowserViewModel] = [:]
     @State private var didEnterBackground = false

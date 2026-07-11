@@ -43,6 +43,7 @@ struct HomeView: View {
     @State private var connectionToDelete: RemoteConnection?
     @State private var localFolderToDelete: LocalFolderSource?
     @State private var selectedSource: ContentSource?
+    @State private var remoteNavigationPath: [String] = []
     @State private var showSettings = false
 
     // タブ管理
@@ -82,6 +83,9 @@ struct HomeView: View {
     }
 
     private func selectSource(_ source: ContentSource) {
+        if selectedSource != source {
+            remoteNavigationPath.removeAll()
+        }
         selectedSource = source
         selectedTab = .browse
         columnVisibility = .detailOnly
@@ -814,6 +818,7 @@ struct HomeView: View {
                         if let connection = connectionsViewModel?.connections.first(where: { $0.id == connectionID }) {
                             FileBrowserView(
                                 connection: connection,
+                                navigationPath: $remoteNavigationPath,
                                 isActive: selectedTab == .browse,
                                 onConnectionUnavailable: {
                                     guard selectedSource == .remote(connection.id) else { return }
