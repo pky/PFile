@@ -45,11 +45,9 @@ struct MediaListDetailView: View {
                 }
             }
         }
-        .task {
+        .task(id: isActive) {
             guard isActive else { return }
-            let vm = makeViewModel()
-            viewModel = vm
-            await vm.load()
+            await loadWhenActivated()
         }
         .alert("名前を変更", isPresented: $showRenameAlert) {
             TextField("リスト名", text: $renameText)
@@ -65,7 +63,9 @@ struct MediaListDetailView: View {
         } message: {
             Text("リスト名を変更します。")
         }
-        .fullScreenCover(item: $selectedRoute) { route in
+        .fullScreenCover(item: $selectedRoute, onDismiss: {
+            viewModel?.refreshFiles(reason: "viewer_dismissed")
+        }) { route in
             MediaViewerContainerView(route: route, onReturnHome: onReturnHome)
                 .environment(\.appEnvironment, appEnvironment)
         }
@@ -86,12 +86,6 @@ struct MediaListDetailView: View {
         .onChange(of: editMode) { _, newValue in
             if newValue != .active {
                 selectedFileIDs.removeAll()
-            }
-        }
-        .onChange(of: isActive) { _, newValue in
-            guard newValue else { return }
-            Task {
-                await loadWhenActivated()
             }
         }
         .onChange(of: viewModel?.files.map(\.id) ?? []) { _, newIDs in

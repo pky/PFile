@@ -20,14 +20,18 @@ enum MediaListSortKey: String, CaseIterable {
 final class MediaListDetailViewModel {
 
     let list: MediaList
-    /// list.items から直接計算することで、AddToListSheet 等でアイテムが追加された後も自動反映される
-    var files: [MediaFile] { sortFiles(list.items) }
+    private(set) var files: [MediaFile] = []
     var isLoading = false
     var errorMessage: String?
     private(set) var thumbnails: [String: UIImage] = [:]
     private(set) var connections: [UUID: RemoteConnection] = [:]
-    var sortKey: MediaListSortKey = .addedAt
-    var sortOrder: SortOrder = .descending
+    private(set) var fileSortCount = 0
+    var sortKey: MediaListSortKey = .addedAt {
+        didSet { refreshFiles(reason: "sort_key") }
+    }
+    var sortOrder: SortOrder = .descending {
+        didSet { refreshFiles(reason: "sort_order") }
+    }
 
     private let repository: any MediaListRepository
     private let remoteConnectionRepository: (any RemoteConnectionRepository)?
@@ -63,6 +67,7 @@ final class MediaListDetailViewModel {
            let saved = SortOrder(rawValue: raw) {
             sortOrder = saved
         }
+        refreshFiles(reason: "init")
     }
 
     func load() async {
@@ -72,12 +77,13 @@ final class MediaListDetailViewModel {
            let all = try? await repo.fetchAll() {
             connections = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
         }
+        refreshFiles(reason: "load")
     }
 
     func removeFile(_ file: MediaFile) async {
         do {
             try await repository.removeFile(file, from: list)
-            // files は list.items の computed property のため自動更新
+            refreshFiles(reason: "remove")
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -89,6 +95,7 @@ final class MediaListDetailViewModel {
             for file in files {
                 try await repository.removeFile(file, from: list)
             }
+            refreshFiles(reason: "remove_multiple")
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -148,13 +155,23 @@ final class MediaListDetailViewModel {
 
     func selectThumbnail(_ image: UIImage, for file: MediaFile) {
         let key = cacheKey(for: file)
-        thumbnailService?.store(image, for: key)
-        thumbnails[key] = image
+        thumbnails[key] = thumbnailService?.store(image, for: key) ?? image
     }
 
     func applySortChange() {
         UserDefaults.standard.set(sortKey.rawValue, forKey: Self.sortKeyDefaultsKey)
         UserDefaults.standard.set(sortOrder.rawValue, forKey: Self.sortOrderDefaultsKey)
+    }
+
+    func refreshFiles(reason: String = "items_changed") {
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        files = sortFiles(list.items)
+        fileSortCount += 1
+#if DEBUG
+        MediaDiagnostics.performance(
+            "event=media_list_sorted sequence=\(fileSortCount) count=\(files.count) elapsedMs=\(Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)) reason=\(reason)"
+        )
+#endif
     }
 
     func resolvePlayableFile(_ file: MediaFile, smbClientManager: SMBClientManager) async -> MediaFile {
@@ -178,6 +195,7 @@ final class MediaListDetailViewModel {
             }
 
             try await repository.addItems([resolvedItem], sourceID: file.sourceID, to: list)
+            refreshFiles(reason: "path_resolved")
             errorMessage = nil
             return list.items.first(where: { $0.id == file.id }) ?? file
         } catch {

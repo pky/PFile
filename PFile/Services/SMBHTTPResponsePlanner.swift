@@ -7,6 +7,29 @@ struct SMBHTTPResponsePlan: Equatable {
     let bodyRange: ClosedRange<UInt64>?
 }
 
+struct SMBHTTPMediaDescriptor: Equatable {
+    let requestPath: String
+    let contentType: String
+
+    static func make(filePath: String) -> SMBHTTPMediaDescriptor {
+        let ext = (filePath as NSString).pathExtension.lowercased()
+        let safeExtension = ext.allSatisfy { $0.isLetter || $0.isNumber } ? ext : ""
+        let requestPath = safeExtension.isEmpty ? "/stream" : "/stream.\(safeExtension)"
+
+        let contentType: String
+        switch safeExtension {
+        case "mp4", "m4v": contentType = "video/mp4"
+        case "mov": contentType = "video/quicktime"
+        case "mkv": contentType = "video/x-matroska"
+        case "webm": contentType = "video/webm"
+        case "avi": contentType = "video/x-msvideo"
+        case "ts", "m2ts", "mts": contentType = "video/mp2t"
+        default: contentType = "application/octet-stream"
+        }
+        return SMBHTTPMediaDescriptor(requestPath: requestPath, contentType: contentType)
+    }
+}
+
 enum SMBHTTPResponsePlanner {
 
     enum RangeError: Error, Equatable {

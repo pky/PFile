@@ -36,6 +36,20 @@ final class MediaThumbnailProvider: MediaThumbnailProviding {
             return cached
         }
 
+        if case .remote = source {
+            guard let connection, item.isVideo else { return nil }
+            // SMB動画は生成側でディスクキャッシュも確認し、共通キーで保存する。
+            return await thumbnailService.generateVideoThumbnail(
+                for: item,
+                connection: connection,
+                smbClientManager: smbClientManager
+            )
+        }
+
+        if let cached = await thumbnailService.loadCachedThumbnail(for: key) {
+            return cached
+        }
+
         let image: UIImage?
         switch source {
         case .photoLibrary:
@@ -44,19 +58,11 @@ final class MediaThumbnailProvider: MediaThumbnailProviding {
         case .localFolder:
             image = await loadLocalThumbnail(path: item.path, isVideo: item.isVideo)
         case .remote:
-            guard let connection, item.isVideo else { return nil }
-            // SMB動画は生成側が共通キーで保存するため、ここでは二重保存しない。
-            return await thumbnailService.generateVideoThumbnail(
-                for: item,
-                connection: connection,
-                smbClientManager: smbClientManager
-            )
+            return nil
         }
 
-        if let image {
-            thumbnailService.store(image, for: key)
-        }
-        return image
+        guard let image else { return nil }
+        return await thumbnailService.storeAsync(image, for: key)
     }
 
     func cacheKey(source: ContentSource, item: DirectoryItem) -> String {

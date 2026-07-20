@@ -40,6 +40,8 @@ final class SMBStreamingServer {
     private var smbClient: SMB2Manager?
     private var smbFilePath: String = ""
     private var fileSize: UInt64 = 0
+    private var contentType = "application/octet-stream"
+    private var requestPath = "/stream"
     private var nextRequestID: Int = 0
     private var activeRequestCount: Int = 0
     private var activeReadCount: Int = 0
@@ -64,6 +66,9 @@ final class SMBStreamingServer {
 
     func start(client: SMB2Manager, filePath: String, fileSize: Int64?) async throws {
         self.smbClient = client
+        let mediaDescriptor = SMBHTTPMediaDescriptor.make(filePath: filePath)
+        contentType = mediaDescriptor.contentType
+        requestPath = mediaDescriptor.requestPath
 
         let originalRelPath = relativePath(filePath)
         let nfcPath = originalRelPath.precomposedStringWithCanonicalMapping
@@ -71,7 +76,7 @@ final class SMBStreamingServer {
 
         // NFC/NFDどちらでサーバーが保存しているかをattributesOfItemで確認してパスを決定
         self.smbFilePath = await resolveFilePath(client: client, nfcPath: nfcPath, originalPath: originalRelPath, bytesConverted: bytesConverted)
-        print("[SMBStreamingServer] playerID: \(ownerID) | smbFilePath: \(smbFilePath)")
+        MediaDiagnostics.resource("event=proxy_path_resolved ownerID=\(ownerID)")
 
         self.fileSize = fileSize.map { UInt64(max(0, $0)) } ?? 0
         if self.fileSize == 0 {
@@ -93,7 +98,7 @@ final class SMBStreamingServer {
                     guard !resolved else { return }
                     resolved = true
                     if let port = listener.port {
-                        self?.localURL = URL(string: "http://127.0.0.1:\(port)/stream")
+                        self?.localURL = URL(string: "http://127.0.0.1:\(port)\(self?.requestPath ?? "/stream")")
                     }
                     cont.resume()
                 case .failed(let error):
@@ -110,7 +115,7 @@ final class SMBStreamingServer {
             listener.start(queue: queue)
         }
 
-        print("[SMBStreamingServer] playerID: \(ownerID) | Started: \(localURL?.absoluteString ?? "nil") | size: \(self.fileSize) bytes")
+        MediaDiagnostics.resource("event=proxy_started ownerID=\(ownerID) size=\(self.fileSize)")
     }
 
     func stop() {
@@ -166,7 +171,7 @@ final class SMBStreamingServer {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, _, error in
             guard let self else { connection.cancel(); return }
             if let error {
-                print("[SMBStreamingServer] playerID: \(ownerID) | request[\(requestID)] receive error: \(error)")
+                MediaDiagnostics.resource("event=proxy_receive_failed ownerID=\(ownerID) requestID=\(requestID) \(MediaDiagnostics.errorCode(error))")
                 self.finishRequest(connection, requestID: requestID, reason: "receive_error")
                 return
             }
@@ -195,6 +200,10 @@ final class SMBStreamingServer {
         }
 
         let method = parts[0]
+        guard parts[1] == requestPath else {
+            sendError(404, on: connection, requestID: requestID, reason: "path_not_found")
+            return
+        }
         let rangeValue = lines.first(where: { $0.lowercased().hasPrefix("range:") })
         let byteRange = rangeValue.flatMap { SMBHTTPResponsePlanner.parseRangeHeader($0, fileSize: fileSize) }
 
@@ -204,9 +213,6 @@ final class SMBStreamingServer {
         case "HEAD":
             sendHead(on: connection, requestID: requestID)
         case "GET":
-            if let byteRange {
-                cancelOlderRangeRequests(newRequestID: requestID, newRange: byteRange)
-            }
             let task: Task<Void, Never> = Task { [weak self] in
                 guard let self else { return }
                 await self.sendGet(range: byteRange, on: connection, requestID: requestID)
@@ -295,7 +301,7 @@ Connection: close\r
         } catch is CancellationError {
             finishRequest(connection, requestID: requestID, reason: "cancelled")
         } catch {
-            print("[SMBStreamingServer] playerID: \(ownerID) | request[\(requestID)] read error: \(error) | activeReads: \(currentActiveReadCount())")
+            MediaDiagnostics.resource("event=proxy_read_failed ownerID=\(ownerID) requestID=\(requestID) activeReads=\(currentActiveReadCount()) \(MediaDiagnostics.errorCode(error))")
             sendError(500, on: connection, requestID: requestID, reason: "read_error")
         }
     }
@@ -304,7 +310,7 @@ Connection: close\r
         var lines = [
             "HTTP/1.1 \(status)",
             "Content-Length: \(contentLength)",
-            "Content-Type: application/octet-stream",
+            "Content-Type: \(contentType)",
             "Accept-Ranges: bytes",
             "Connection: keep-alive",
         ]
@@ -360,21 +366,6 @@ Connection: close\r
         return nextRequestID
     }
 
-    private func cancelOlderRangeRequests(newRequestID: Int, newRange: ClosedRange<UInt64>) {
-        let olderRequestIDs = activeTasks.keys.filter { $0 != newRequestID }
-        guard !olderRequestIDs.isEmpty else { return }
-
-        print("[SMBStreamingServer] playerID: \(ownerID) | request[\(newRequestID)] prioritizing latest Range: \(newRange) | cancelling: \(olderRequestIDs)")
-        for requestID in olderRequestIDs {
-            activeTasks[requestID]?.cancel()
-            if let connection = activeConnections[requestID] {
-                finishRequest(connection, requestID: requestID, reason: "superseded_by_latest_range")
-            } else {
-                activeTasks.removeValue(forKey: requestID)
-            }
-        }
-    }
-
     private func readChunkSize(for bodyRange: ClosedRange<UInt64>, isFirstChunk: Bool) -> UInt64 {
         let bodyLength = bodyRange.upperBound - bodyRange.lowerBound + 1
         if isFirstChunk {
@@ -393,8 +384,7 @@ Connection: close\r
         activeConnections: Int,
         activeTasks: Int
     ) {
-        let fileName = URL(fileURLWithPath: smbFilePath).lastPathComponent
-        let detail = "[VideoPlayer] overlap detected | phase: \(phase) | playerID: \(ownerID) | file: \(fileName) | activeRequests: \(activeRequests) | activeReads: \(activeReads) | activeConnections: \(activeConnections) | activeTasks: \(activeTasks)"
+        let detail = "[VideoPlayer] overlap detected | phase: \(phase) | playerID: \(ownerID) | activeRequests: \(activeRequests) | activeReads: \(activeReads) | activeConnections: \(activeConnections) | activeTasks: \(activeTasks)"
         print(detail)
 
         let telemetryDetail = "[VideoPlayer] overlap detected | phase: \(phase) | playerID: \(ownerID) | activeRequests: \(activeRequests) | activeReads: \(activeReads) | activeConnections: \(activeConnections) | activeTasks: \(activeTasks)"

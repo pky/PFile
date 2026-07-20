@@ -6,12 +6,84 @@ enum ThumbnailGenerationPolicy {
     static let choicePositions: [Float] = [0.04, 0.20, 0.38, 0.56, 0.74, 0.92]
     static let supplementalChoicePositions: [Float] = [0.11, 0.28, 0.47, 0.65, 0.83, 0.97]
     static let maximumChoiceCount = 8
+    static let maximumConsecutiveChoiceFailures = 2
 
-    static let automaticPositions: [Float] = [0.10, 0.20]
+    static let automaticPositions: [Float] = [0.10, 0.20, 0.50]
 
+    static func shouldIncludeChoice(isBlack: Bool) -> Bool {
+        !isBlack
+    }
+
+    static func shouldStopChoiceSearch(consecutiveFailures: Int) -> Bool {
+        consecutiveFailures >= maximumConsecutiveChoiceFailures
+    }
 }
 
 typealias ThumbnailChoiceProgressHandler = @MainActor (_ candidateCount: Int, _ maximumCount: Int) -> Void
+
+private enum AutomaticThumbnailAttempt {
+    case accepted(UIImage)
+    case framesRejected
+
+    var image: UIImage? {
+        guard case .accepted(let image) = self else { return nil }
+        return image
+    }
+}
+
+@MainActor
+final class ThumbnailGenerationLimiter {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private let limit: Int
+    private var waiters: [Waiter] = []
+    private(set) var activeCount = 0
+
+    var queuedCount: Int { waiters.count }
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    func acquire() async -> Bool {
+        guard !Task.isCancelled else { return false }
+        if activeCount < limit {
+            activeCount += 1
+            return true
+        }
+
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                waiters.append(Waiter(id: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelWaiter(id: id)
+            }
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            activeCount = max(0, activeCount - 1)
+        } else {
+            waiters.removeFirst().continuation.resume(returning: true)
+        }
+    }
+
+    private func cancelWaiter(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(returning: false)
+    }
+}
 
 enum ThumbnailImageAnalyzer {
     static func isBlack(_ image: UIImage) -> Bool {
@@ -20,6 +92,10 @@ enum ThumbnailImageAnalyzer {
 
     static func isLowInformation(_ image: UIImage) -> Bool {
         image.thumbnailCandidate(at: 0).isLowInformation
+    }
+
+    static func areVisuallySimilar(_ lhs: UIImage, _ rhs: UIImage) -> Bool {
+        lhs.thumbnailCandidate(at: 0).isVisuallySimilar(to: rhs.thumbnailCandidate(at: 0))
     }
 }
 
@@ -58,13 +134,22 @@ final class ThumbnailCacheClearObserver {
 /// ネットワークファイルのサムネイルを非同期で生成・キャッシュする
 final class ThumbnailService: ThumbnailServiceProtocol {
 
+    private struct GenerationResultWaiter {
+        let id: UUID
+        let continuation: CheckedContinuation<UIImage?, Never>
+    }
+
+    private struct CandidateFetchResult {
+        let candidates: [ThumbnailCandidate]
+        let stoppedAfterConsecutiveFailures: Bool
+    }
+
     private let memoryCache = NSCache<NSString, UIImage>()
     private let cacheDir: URL
-    @MainActor private var generationWaiters: [String: [CheckedContinuation<UIImage?, Never>]] = [:]
-    @MainActor private var activeGenerationCount = 0
-    @MainActor private var generationPermitWaiters: [CheckedContinuation<Void, Never>] = []
+    private let diskQueue = DispatchQueue(label: "jp.pky.pfile.thumbnail-disk", qos: .utility)
+    @MainActor private var generationWaiters: [String: [GenerationResultWaiter]] = [:]
     // 同一SMBクライアント内のreadは直列化しつつ、別動画は2本まで並行生成する。
-    private let maxConcurrentGenerationCount = 2
+    @MainActor private let generationLimiter = ThumbnailGenerationLimiter(limit: 2)
 
     init() {
         memoryCache.countLimit = 500
@@ -86,38 +171,74 @@ final class ThumbnailService: ThumbnailServiceProtocol {
     // MARK: - キャッシュアクセス
 
     func thumbnail(for key: String) -> UIImage? {
-        if let cached = memoryCache.object(forKey: key as NSString) {
-            if shouldDiscardCachedThumbnail(cached, key: key) {
-                removeCachedThumbnail(for: key)
-                return nil
-            }
-            return cached
+        guard let cached = memoryCache.object(forKey: key as NSString) else { return nil }
+        if !ThumbnailImageNormalizer.isCanonical(cached) {
+            removeCachedThumbnail(for: key)
+            return nil
         }
-        if let diskImage = loadFromDisk(key: key) {
-            if shouldDiscardCachedThumbnail(diskImage, key: key) {
-                removeCachedThumbnail(for: key)
-                return nil
-            }
-            store(diskImage, for: key)
-            return diskImage
-        }
-        return nil
+        return cached
     }
 
-    func store(_ image: UIImage, for key: String) {
+    func loadCachedThumbnail(for key: String) async -> UIImage? {
+        if let cached = thumbnail(for: key) { return cached }
+        let url = diskURL(for: key)
+        let image: UIImage? = await withCheckedContinuation { continuation in
+            diskQueue.async {
+                guard let data = try? Data(contentsOf: url),
+                      let image = UIImage(data: data),
+                      Self.isValidStoredThumbnail(image, key: key) else {
+                    try? FileManager.default.removeItem(at: url)
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: image)
+            }
+        }
+        guard let image else { return nil }
         let cost = Int(image.size.width * image.size.height * 4)
         memoryCache.setObject(image, forKey: key as NSString, cost: cost)
-        saveToDisk(image, key: key)
+        return image
+    }
+
+    @discardableResult
+    func store(_ image: UIImage, for key: String) -> UIImage? {
+        guard let normalized = ThumbnailImageNormalizer.normalize(image),
+              Self.isValidStoredThumbnail(normalized, key: key) else { return nil }
+        let cost = Int(normalized.size.width * normalized.size.height * 4)
+        memoryCache.setObject(normalized, forKey: key as NSString, cost: cost)
+        saveToDiskAsync(normalized, key: key)
+        return normalized
+    }
+
+    func storeAsync(_ image: UIImage, for key: String) async -> UIImage? {
+        let normalized: UIImage? = await withCheckedContinuation { continuation in
+            diskQueue.async {
+                guard let normalized = ThumbnailImageNormalizer.normalize(image),
+                      Self.isValidStoredThumbnail(normalized, key: key) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: normalized)
+            }
+        }
+        guard let normalized else { return nil }
+        let cost = Int(normalized.size.width * normalized.size.height * 4)
+        memoryCache.setObject(normalized, forKey: key as NSString, cost: cost)
+        saveToDiskAsync(normalized, key: key)
+        return normalized
     }
 
     func clearCache() -> Int {
-        let removedFileCount = (try? FileManager.default.contentsOfDirectory(
-            at: cacheDir,
-            includingPropertiesForKeys: nil
-        ).count) ?? 0
         memoryCache.removeAllObjects()
-        try? FileManager.default.removeItem(at: cacheDir)
-        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let removedFileCount = diskQueue.sync {
+            let count = (try? FileManager.default.contentsOfDirectory(
+                at: cacheDir,
+                includingPropertiesForKeys: nil
+            ).count) ?? 0
+            try? FileManager.default.removeItem(at: cacheDir)
+            try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+            return count
+        }
         NotificationCenter.default.post(name: .thumbnailCacheDidClear, object: nil)
         print("[ThumbnailService] Thumbnail cache cleared | files: \(removedFileCount)")
         return removedFileCount
@@ -133,32 +254,56 @@ final class ThumbnailService: ThumbnailServiceProtocol {
         smbClientManager: SMBClientManager
     ) async -> UIImage? {
         let key = cacheKey(connection: connection, item: item)
-        if let cached = thumbnail(for: key) { return cached }
+        let mediaID = MediaDiagnostics.mediaID(
+            sourceID: "remote:\(connection.id.uuidString)",
+            path: item.path
+        )
+        if let cached = thumbnail(for: key) {
+            MediaDiagnostics.thumbnail("event=cache_hit mediaID=\(mediaID)")
+            return cached
+        }
+        if let cached = await loadCachedThumbnail(for: key) {
+            MediaDiagnostics.thumbnail("event=disk_cache_hit mediaID=\(mediaID)")
+            return cached
+        }
         guard !Task.isCancelled else { return nil }
 
         if generationWaiters[key] != nil {
-            return await withCheckedContinuation { continuation in
-                generationWaiters[key, default: []].append(continuation)
-            }
+            return await waitForInFlightGeneration(for: key)
         }
 
         generationWaiters[key] = []
-        await acquireGenerationPermit()
+        let interval = MediaDiagnostics.begin("ThumbnailGeneration", mediaID: mediaID)
+        MediaDiagnostics.thumbnail("event=generation_begin mediaID=\(mediaID)")
+        guard await acquireGenerationPermit() else {
+            let waiters = generationWaiters.removeValue(forKey: key) ?? []
+            waiters.forEach { $0.continuation.resume(returning: nil) }
+            MediaDiagnostics.thumbnail("event=generation_end mediaID=\(mediaID) result=cancelled")
+            MediaDiagnostics.end(interval, mediaID: mediaID, result: "cancelled")
+            return nil
+        }
+        defer { releaseGenerationPermit() }
         let image: UIImage?
         if Task.isCancelled {
             image = nil
         } else {
-            image = await generateUncachedVideoThumbnail(
+            let generated = await generateUncachedVideoThumbnail(
                 for: item,
                 connection: connection,
                 smbClientManager: smbClientManager
             )
-            if let image { store(image, for: key) }
+            if let generated {
+                image = await storeAsync(generated, for: key)
+            } else {
+                image = nil
+            }
         }
-        releaseGenerationPermit()
+        let result = image == nil ? "failed" : "success"
+        MediaDiagnostics.thumbnail("event=generation_end mediaID=\(mediaID) result=\(result)")
+        MediaDiagnostics.end(interval, mediaID: mediaID, result: result)
 
         let waiters = generationWaiters.removeValue(forKey: key) ?? []
-        waiters.forEach { $0.resume(returning: image) }
+        waiters.forEach { $0.continuation.resume(returning: image) }
         return image
     }
 
@@ -170,14 +315,15 @@ final class ThumbnailService: ThumbnailServiceProtocol {
         progress: @escaping ThumbnailChoiceProgressHandler = { _, _ in }
     ) async -> [UIImage] {
         guard !Task.isCancelled else { return [] }
-        await acquireGenerationPermit()
+        guard await acquireGenerationPermit() else { return [] }
+        defer { releaseGenerationPermit() }
+        guard !Task.isCancelled else { return [] }
         let candidates = await generateUncachedVideoThumbnailChoices(
             for: item,
             connection: connection,
             smbClientManager: smbClientManager,
             progress: progress
         )
-        releaseGenerationPermit()
         return candidates
             .filter { !$0.isBlack }
             .sorted { $0.position < $1.position }
@@ -186,33 +332,55 @@ final class ThumbnailService: ThumbnailServiceProtocol {
     }
 
     @MainActor
-    private func acquireGenerationPermit() async {
-        if activeGenerationCount < maxConcurrentGenerationCount {
-            activeGenerationCount += 1
+    private func acquireGenerationPermit() async -> Bool {
+        let acquired = await generationLimiter.acquire()
 #if DEBUG
-            print("[ThumbnailService] Generation started | active: \(activeGenerationCount)")
+        MediaDiagnostics.performance(
+            "event=thumbnail_slot_\(acquired ? "acquired" : "cancelled") active=\(generationLimiter.activeCount) queued=\(generationLimiter.queuedCount)"
+        )
 #endif
-            return
-        }
-
-        await withCheckedContinuation { continuation in
-            generationPermitWaiters.append(continuation)
-        }
-#if DEBUG
-        print("[ThumbnailService] Queued generation started | active: \(activeGenerationCount)")
-#endif
+        return acquired
     }
 
     @MainActor
     private func releaseGenerationPermit() {
-        if generationPermitWaiters.isEmpty {
-            activeGenerationCount = max(0, activeGenerationCount - 1)
-        } else {
-            generationPermitWaiters.removeFirst().resume()
-        }
+        generationLimiter.release()
 #if DEBUG
-        print("[ThumbnailService] Generation finished | active: \(activeGenerationCount) | queued: \(generationPermitWaiters.count)")
+        MediaDiagnostics.performance(
+            "event=thumbnail_slot_released active=\(generationLimiter.activeCount) queued=\(generationLimiter.queuedCount)"
+        )
 #endif
+    }
+
+    @MainActor
+    private func waitForInFlightGeneration(for key: String) async -> UIImage? {
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                guard generationWaiters[key] != nil else {
+                    continuation.resume(returning: thumbnail(for: key))
+                    return
+                }
+                generationWaiters[key, default: []].append(
+                    GenerationResultWaiter(id: id, continuation: continuation)
+                )
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelGenerationResultWaiter(key: key, id: id)
+            }
+        }
+    }
+
+    @MainActor
+    private func cancelGenerationResultWaiter(key: String, id: UUID) {
+        guard let index = generationWaiters[key]?.firstIndex(where: { $0.id == id }),
+              let waiter = generationWaiters[key]?.remove(at: index) else { return }
+        waiter.continuation.resume(returning: nil)
     }
 
     @MainActor
@@ -221,22 +389,36 @@ final class ThumbnailService: ThumbnailServiceProtocol {
         connection: RemoteConnection,
         smbClientManager: SMBClientManager
     ) async -> UIImage? {
-        return await generateUsingAvailableMedia(
+        let mediaID = MediaDiagnostics.mediaID(
+            sourceID: "remote:\(connection.id.uuidString)",
+            path: item.path
+        )
+        let attempt: AutomaticThumbnailAttempt? = await generateUsingAvailableMedia(
             for: item,
             connection: connection,
             smbClientManager: smbClientManager
         ) { media in
+            var didReceiveFrame = false
             for position in ThumbnailGenerationPolicy.automaticPositions {
                 guard let image = await VLCThumbnailFetcher().fetch(
                     media: media,
-                    position: position
-                ), !ThumbnailImageAnalyzer.isBlack(image) else {
+                    position: position,
+                    mediaID: mediaID
+                ) else {
                     continue
                 }
-                return image
+                didReceiveFrame = true
+                guard !ThumbnailImageAnalyzer.isBlack(image) else {
+                    MediaDiagnostics.thumbnail(
+                        "event=frame_rejected mediaID=\(mediaID) position=\(position) reason=black"
+                    )
+                    continue
+                }
+                return .accepted(image)
             }
-            return nil
+            return didReceiveFrame ? .framesRejected : nil
         }
+        return attempt?.image
     }
 
     @MainActor
@@ -246,13 +428,20 @@ final class ThumbnailService: ThumbnailServiceProtocol {
         smbClientManager: SMBClientManager,
         progress: @escaping ThumbnailChoiceProgressHandler
     ) async -> [ThumbnailCandidate] {
+        let mediaID = MediaDiagnostics.mediaID(
+            sourceID: "remote:\(connection.id.uuidString)",
+            path: item.path
+        )
         progress(0, ThumbnailGenerationPolicy.maximumChoiceCount)
         return await generateUsingAvailableMedia(
             for: item,
             connection: connection,
             smbClientManager: smbClientManager
         ) { media in
-            let candidates = await self.fetchVideoCandidates(media: media) { candidateCount in
+            let candidates = await self.fetchVideoCandidates(
+                media: media,
+                mediaID: mediaID
+            ) { candidateCount in
                 progress(candidateCount, ThumbnailGenerationPolicy.maximumChoiceCount)
             }
             return candidates.isEmpty ? nil : candidates
@@ -267,6 +456,11 @@ final class ThumbnailService: ThumbnailServiceProtocol {
         operation: (VLCMedia) async -> Result?
     ) async -> Result? {
 
+        let mediaID = MediaDiagnostics.mediaID(
+            sourceID: "remote:\(connection.id.uuidString)",
+            path: item.path
+        )
+
 #if !targetEnvironment(simulator)
         // 実機: SMBStreamingServer（AMSMB2）経由でHTTP URLを使用。
         // VLCKit の SMB クライアントでは NFD/NFC 不一致によるエラーが起きるため、
@@ -279,6 +473,7 @@ final class ThumbnailService: ThumbnailServiceProtocol {
                     path: item.path,
                     smbClientManager: smbClientManager
                   ) else { return nil }
+            MediaDiagnostics.thumbnail("event=route_begin mediaID=\(mediaID) route=vlc_direct_smb")
             let directMedia = VLCMedia(url: directURL)
             directMedia.addOption(":network-caching=300")
             directMedia.addOption(":smb-caching=300")
@@ -297,7 +492,7 @@ final class ThumbnailService: ThumbnailServiceProtocol {
             return await generateDirect()
         }
         let shareName = (credential.shareName.isEmpty || credential.shareName == "/") ? "" : credential.shareName
-        let server = SMBStreamingServer(ownerID: "thumbnail-\(item.path)")
+        let server = SMBStreamingServer(ownerID: "thumbnail-\(mediaID)")
         do {
             try await SMB2OperationGate.runAsync {
                 try await dedicatedClient.connectShare(name: shareName)
@@ -307,7 +502,9 @@ final class ThumbnailService: ThumbnailServiceProtocol {
             dedicatedClient.timeout = 0
             try await server.start(client: dedicatedClient, filePath: item.path, fileSize: item.size)
         } catch {
-            print("[ThumbnailService] Failed to start streaming server: \(error)")
+            MediaDiagnostics.thumbnail(
+                "event=route_failed mediaID=\(mediaID) route=http_proxy \(MediaDiagnostics.errorCode(error))"
+            )
             server.stop()
             return await generateDirect()
         }
@@ -316,6 +513,7 @@ final class ThumbnailService: ThumbnailServiceProtocol {
             return await generateDirect()
         }
         defer { server.stop() }
+        MediaDiagnostics.thumbnail("event=route_begin mediaID=\(mediaID) route=http_proxy")
         let proxyMedia = VLCMedia(url: localURL)
         if let proxyResult = await operation(proxyMedia) {
             return proxyResult
@@ -337,23 +535,28 @@ final class ThumbnailService: ThumbnailServiceProtocol {
     @MainActor
     private func fetchVideoCandidates(
         media: VLCMedia,
+        mediaID: String,
         progress: @escaping @MainActor (_ candidateCount: Int) -> Void
     ) async -> [ThumbnailCandidate] {
-        var candidates = await fetchCandidates(
+        let initialResult = await fetchCandidates(
             media: media,
             positions: ThumbnailGenerationPolicy.choicePositions,
+            mediaID: mediaID,
             progress: progress
         )
-        if Self.visuallyDistinctCandidates(candidates).count
+        var candidates = initialResult.candidates
+        if !initialResult.stoppedAfterConsecutiveFailures,
+           Self.visuallyDistinctCandidates(candidates).count
             < ThumbnailGenerationPolicy.maximumChoiceCount {
-            let supplementalCandidates = await fetchCandidates(
+            let supplementalResult = await fetchCandidates(
                 media: media,
                 positions: ThumbnailGenerationPolicy.supplementalChoicePositions,
+                mediaID: mediaID,
                 existingCandidates: candidates,
                 maximumDistinctCandidateCount: ThumbnailGenerationPolicy.maximumChoiceCount,
                 progress: progress
             )
-            candidates += supplementalCandidates
+            candidates += supplementalResult.candidates
         }
         return Self.visuallyDistinctCandidates(candidates)
     }
@@ -362,36 +565,77 @@ final class ThumbnailService: ThumbnailServiceProtocol {
     private func fetchCandidates(
         media: VLCMedia,
         positions: [Float],
+        mediaID: String,
         existingCandidates: [ThumbnailCandidate] = [],
         maximumDistinctCandidateCount: Int? = nil,
         progress: @escaping @MainActor (_ candidateCount: Int) -> Void
-    ) async -> [ThumbnailCandidate] {
+    ) async -> CandidateFetchResult {
         var candidates: [ThumbnailCandidate] = []
+        var consecutiveFailures = 0
         for position in positions {
-            guard !Task.isCancelled else { return candidates }
-            let candidate = await VLCThumbnailFetcher().fetch(media: media, position: position)
-            guard !Task.isCancelled else { return candidates }
-            if let candidate {
-                let thumbnailCandidate = candidate.thumbnailCandidate(at: position)
-                candidates.append(thumbnailCandidate)
-                let distinctCandidateCount = Self.visuallyDistinctCandidates(
-                    existingCandidates + candidates
-                ).count
-                progress(distinctCandidateCount)
-                if let maximumDistinctCandidateCount,
-                   distinctCandidateCount >= maximumDistinctCandidateCount {
-                    return candidates
+            guard !Task.isCancelled else {
+                return CandidateFetchResult(
+                    candidates: candidates,
+                    stoppedAfterConsecutiveFailures: true
+                )
+            }
+            let candidate = await VLCThumbnailFetcher().fetch(
+                media: media,
+                position: position,
+                mediaID: mediaID
+            )
+            guard !Task.isCancelled else {
+                return CandidateFetchResult(
+                    candidates: candidates,
+                    stoppedAfterConsecutiveFailures: true
+                )
+            }
+            guard let candidate else {
+                consecutiveFailures += 1
+                MediaDiagnostics.thumbnail(
+                    "event=choice_frame_failed mediaID=\(mediaID) position=\(position) consecutiveFailures=\(consecutiveFailures)"
+                )
+                if ThumbnailGenerationPolicy.shouldStopChoiceSearch(
+                    consecutiveFailures: consecutiveFailures
+                ) {
+                    MediaDiagnostics.thumbnail(
+                        "event=choice_search_stopped mediaID=\(mediaID) reason=consecutive_failures candidates=\(Self.visuallyDistinctCandidates(existingCandidates + candidates).count)"
+                    )
+                    return CandidateFetchResult(
+                        candidates: candidates,
+                        stoppedAfterConsecutiveFailures: true
+                    )
                 }
+                continue
+            }
+            consecutiveFailures = 0
+            let thumbnailCandidate = candidate.thumbnailCandidate(at: position)
+            candidates.append(thumbnailCandidate)
+            let distinctCandidateCount = Self.visuallyDistinctCandidates(
+                existingCandidates + candidates
+            ).count
+            progress(distinctCandidateCount)
+            if let maximumDistinctCandidateCount,
+               distinctCandidateCount >= maximumDistinctCandidateCount {
+                return CandidateFetchResult(
+                    candidates: candidates,
+                    stoppedAfterConsecutiveFailures: false
+                )
             }
         }
-        return candidates
+        return CandidateFetchResult(
+            candidates: candidates,
+            stoppedAfterConsecutiveFailures: false
+        )
     }
 
     private static func visuallyDistinctCandidates(
         _ candidates: [ThumbnailCandidate]
     ) -> [ThumbnailCandidate] {
         var result: [ThumbnailCandidate] = []
-        for candidate in candidates where !candidate.isBlack && !candidate.isLowInformation {
+        for candidate in candidates where ThumbnailGenerationPolicy.shouldIncludeChoice(
+            isBlack: candidate.isBlack
+        ) {
             guard !result.contains(where: { candidate.isVisuallySimilar(to: $0) }) else { continue }
             result.append(candidate)
         }
@@ -401,7 +645,7 @@ final class ThumbnailService: ThumbnailServiceProtocol {
     // MARK: - キー生成
 
     static func remoteVideoCacheKey(connectionID: UUID, itemPath: String) -> String {
-        "remote-video-v2|remote:\(connectionID.uuidString)|\(itemPath)"
+        "remote-video-v3|remote:\(connectionID.uuidString)|\(itemPath)"
     }
 
     func cacheKey(connection: RemoteConnection, item: DirectoryItem) -> String {
@@ -416,26 +660,25 @@ final class ThumbnailService: ThumbnailServiceProtocol {
         return cacheDir.appendingPathComponent(hash + ".jpg")
     }
 
-    private func loadFromDisk(key: String) -> UIImage? {
+    private func saveToDiskAsync(_ image: UIImage, key: String) {
         let url = diskURL(for: key)
-        guard FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url) else { return nil }
-        return UIImage(data: data)
+        diskQueue.async {
+            guard let data = image.jpegData(compressionQuality: 0.7) else { return }
+            try? data.write(to: url, options: .atomic)
+        }
     }
 
-    private func saveToDisk(_ image: UIImage, key: String) {
-        guard let data = image.jpegData(compressionQuality: 0.7) else { return }
-        let url = diskURL(for: key)
-        try? data.write(to: url, options: .atomic)
-    }
-
-    private func shouldDiscardCachedThumbnail(_ image: UIImage, key: String) -> Bool {
-        key.hasPrefix("remote-video-v2|") && ThumbnailImageAnalyzer.isBlack(image)
+    private static func isValidStoredThumbnail(_ image: UIImage, key: String) -> Bool {
+        ThumbnailImageNormalizer.isCanonical(image)
+            && !(key.hasPrefix("remote-video-v3|") && ThumbnailImageAnalyzer.isBlack(image))
     }
 
     private func removeCachedThumbnail(for key: String) {
         memoryCache.removeObject(forKey: key as NSString)
-        try? FileManager.default.removeItem(at: diskURL(for: key))
+        let url = diskURL(for: key)
+        diskQueue.async {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     // MARK: - SMB URL 構築
@@ -473,10 +716,9 @@ private struct ThumbnailCandidate {
     let visualSignature: [UInt8]
 
     var isBlack: Bool {
-        brightness < 0.12
-            || darkPixelRatio > 0.62
-            || upperDecileBrightness < 0.22
-            || (brightness < 0.20 && darkPixelRatio > 0.45)
+        brightness < 0.035
+            || upperDecileBrightness < 0.08
+            || (brightness < 0.10 && darkPixelRatio > 0.93)
     }
 
     var isLowInformation: Bool {
@@ -491,7 +733,7 @@ private struct ThumbnailCandidate {
         }
         let normalizedDifference = CGFloat(totalDifference)
             / CGFloat(visualSignature.count * 255)
-        return normalizedDifference < 0.05
+        return normalizedDifference < 0.02
     }
 }
 
@@ -551,18 +793,25 @@ private extension UIImage {
         let lowerDecileIndex = min(Int(count * 0.1), sortedBrightnessValues.count - 1)
         let brightnessRange = upperDecileBrightness - sortedBrightnessValues[lowerDecileIndex]
         var visualSignature: [UInt8] = []
-        visualSignature.reserveCapacity(64)
+        visualSignature.reserveCapacity(8 * 8 * 3)
         for y in 0..<8 {
             for x in 0..<8 {
-                var total: CGFloat = 0
+                var redTotal: CGFloat = 0
+                var greenTotal: CGFloat = 0
+                var blueTotal: CGFloat = 0
                 for sampleY in 0..<3 {
                     for sampleX in 0..<3 {
                         let pixelX = x * 3 + sampleX
                         let pixelY = y * 3 + sampleY
-                        total += brightnessValues[pixelY * w + pixelX]
+                        let offset = (pixelY * w + pixelX) * 4
+                        redTotal += CGFloat(pixels[offset]) / 255
+                        greenTotal += CGFloat(pixels[offset + 1]) / 255
+                        blueTotal += CGFloat(pixels[offset + 2]) / 255
                     }
                 }
-                visualSignature.append(UInt8(clamping: Int(total / 9 * 255)))
+                visualSignature.append(UInt8(clamping: Int(redTotal / 9 * 255)))
+                visualSignature.append(UInt8(clamping: Int(greenTotal / 9 * 255)))
+                visualSignature.append(UInt8(clamping: Int(blueTotal / 9 * 255)))
             }
         }
         return (
@@ -584,9 +833,15 @@ private final class VLCThumbnailFetcher: NSObject {
     private var thumbnailer: VLCMediaThumbnailer?
     private var timeoutTask: Task<Void, Never>?
     private var done = false
+    private var mediaID = "unknown"
+    private var position: Float = 0
+    private var startedAt: CFAbsoluteTime = 0
 
-    func fetch(media: VLCMedia, position: Float) async -> UIImage? {
-        await withTaskCancellationHandler {
+    func fetch(media: VLCMedia, position: Float, mediaID: String) async -> UIImage? {
+        self.mediaID = mediaID
+        self.position = position
+        startedAt = CFAbsoluteTimeGetCurrent()
+        return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<UIImage?, Never>) in
                 self.continuation = continuation
                 let t = VLCMediaThumbnailer(media: media, andDelegate: self)
@@ -601,7 +856,11 @@ private final class VLCThumbnailFetcher: NSObject {
                     } catch {
                         return
                     }
-                    self?.resume(with: nil)
+                    guard let self else { return }
+                    MediaDiagnostics.thumbnail(
+                        "event=frame_timeout mediaID=\(self.mediaID) position=\(self.position) elapsedMs=\(Int((CFAbsoluteTimeGetCurrent() - self.startedAt) * 1000))"
+                    )
+                    self.resume(with: nil)
                 }
             }
         } onCancel: { [weak self] in
@@ -636,9 +895,15 @@ extension VLCThumbnailFetcher: VLCMediaThumbnailerDelegate {
         _ mediaThumbnailer: VLCMediaThumbnailer,
         didFinishThumbnail thumbnail: CGImage
     ) {
-        let image = UIImage(cgImage: thumbnail)
+        let rawImage = UIImage(cgImage: thumbnail)
+        let image = ThumbnailImageNormalizer.normalize(rawImage)
         Task { @MainActor [weak self] in
-            self?.resume(with: image)
+            guard let self else { return }
+            let normalizedSize = image?.size ?? .zero
+            MediaDiagnostics.thumbnail(
+                "event=frame_ready mediaID=\(self.mediaID) position=\(self.position) raw=\(thumbnail.width)x\(thumbnail.height) normalized=\(Int(normalizedSize.width))x\(Int(normalizedSize.height)) elapsedMs=\(Int((CFAbsoluteTimeGetCurrent() - self.startedAt) * 1000))"
+            )
+            self.resume(with: image)
         }
     }
 }

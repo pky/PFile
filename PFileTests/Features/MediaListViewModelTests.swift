@@ -218,6 +218,51 @@ struct MediaListViewModelTests {
         #expect(provider.loadCalls.first?.itemPath == "/list/movie.mp4")
     }
 
+    @Test("サムネイル更新ではファイル一覧を再ソートしない")
+    func detail_loadThumbnail_doesNotSortFilesAgain() async {
+        let connection = ModelFactory.makeConnection()
+        let sourceID = ContentSource.remote(connection.id).id
+        let list = MediaList(name: "テスト", scopeID: sourceID, sortOrder: 0)
+        let file = MediaFile(
+            connectionId: connection.id,
+            sourceID: sourceID,
+            path: "/list/movie.mp4",
+            name: "movie.mp4",
+            itemTypeRaw: "video"
+        )
+        list.items = [file]
+        let provider = MockMediaThumbnailProvider()
+        provider.loadedImage = UIImage()
+        let vm = MediaListDetailViewModel(
+            list: list,
+            repository: MockMediaListRepository(),
+            mediaThumbnailProvider: provider
+        )
+        let sortCountBeforeLoading = vm.fileSortCount
+
+        await vm.loadThumbnail(for: file)
+
+        #expect(vm.thumbnail(for: file) != nil)
+        #expect(vm.fileSortCount == sortCountBeforeLoading)
+    }
+
+    @Test("外部で追加された項目は明示的な同期で一覧へ反映する")
+    func detail_refreshFiles_reflectsExternalItemChanges() {
+        let list = MediaList(name: "テスト", sortOrder: 0)
+        let (vm, _) = makeDetailViewModel(list: list)
+        let file = MediaFile(
+            connectionId: UUID(),
+            path: "/added.mp4",
+            name: "added.mp4",
+            itemTypeRaw: "video"
+        )
+
+        list.items = [file]
+        vm.refreshFiles()
+
+        #expect(vm.files.map(\.id) == [file.id])
+    }
+
     @Test("リスト詳細で選択した候補画像をサムネイルへ反映する")
     func detail_selectThumbnail_storesSelectedImage() async {
         let connection = ModelFactory.makeConnection()

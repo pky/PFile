@@ -108,9 +108,11 @@ final class WatchHistoryListViewModel {
             thumbnails[key] = img
             return img
         }
-        if let data = history.thumbnailData, let image = UIImage(data: data) {
-            thumbnails[key] = image
-            return image
+        if let data = history.thumbnailData,
+           let image = UIImage(data: data),
+           let normalized = ThumbnailImageNormalizer.normalize(image) {
+            thumbnails[key] = normalized
+            return normalized
         }
         return nil
     }
@@ -129,8 +131,10 @@ final class WatchHistoryListViewModel {
             thumbnails[key] = img
             return
         }
-        if let data = history.thumbnailData, let image = UIImage(data: data) {
-            thumbnails[key] = image
+        if let data = history.thumbnailData,
+           let image = UIImage(data: data),
+           let normalized = ThumbnailImageNormalizer.normalize(image) {
+            thumbnails[key] = normalized
         }
     }
 

@@ -618,7 +618,7 @@ struct ThumbnailChoiceView: View {
                     ContentUnavailableView(
                         "候補を生成できませんでした",
                         systemImage: "photo.badge.exclamationmark",
-                        description: Text("動画を読み込めないか、取得したフレームがすべて黒画像または単色画像でした")
+                        description: Text("動画を読み込めないか、取得したフレームがすべて黒画像でした")
                     )
                 } else {
                     ScrollView {
@@ -931,13 +931,15 @@ private struct FileRowView: View {
     var body: some View {
         HStack(spacing: 12) {
             Group {
-                if let thumbnail {
-                    Image(uiImage: thumbnail)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 50, height: 50)
-                        .cornerRadius(6)
-                        .clipped()
+                if item.isMedia {
+                    MediaThumbnailView(
+                        thumbnail: thumbnail,
+                        placeholderSystemImage: iconName,
+                        placeholderColor: iconColor,
+                        width: 80,
+                        height: 45
+                    )
+                    .cornerRadius(6)
                 } else {
                     Image(systemName: iconName)
                         .font(item.isDirectory ? .system(size: 30) : .title2)

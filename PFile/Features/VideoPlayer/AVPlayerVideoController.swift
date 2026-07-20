@@ -13,12 +13,22 @@ final class AVPlayerVideoController: @unchecked Sendable {
     let player = AVPlayer()
 
     private let dataSource: ByteRangeDataSource
-    private let resourceLoader: SMBResourceLoaderDelegate
     private let loaderQueue = DispatchQueue(label: "jp.pky.pfile.av-loader-delegate")
     private let contentType: String
     private let fileName: String
     private let startPositionSeconds: Double
     private let ownerID: String
+    private let mediaID: String
+    private lazy var resourceLoader = SMBResourceLoaderDelegate(
+        dataSource: dataSource,
+        contentType: contentType,
+        ownerID: ownerID,
+        mediaID: mediaID
+    ) { [weak self] error in
+        DispatchQueue.main.async {
+            self?.reportFailureOnce(error)
+        }
+    }
 
     private var playerItem: AVPlayerItem?
     private var asset: AVURLAsset?
@@ -32,6 +42,7 @@ final class AVPlayerVideoController: @unchecked Sendable {
     private var didStartPlayback = false
     private var didApplyStartPosition = false
     private var didReportPresentationSize = false
+    private var didReportFailure = false
 
     var onTimeChanged: ((Double) -> Void)?
     var onDurationChanged: ((Double) -> Void)?
@@ -45,18 +56,15 @@ final class AVPlayerVideoController: @unchecked Sendable {
         contentType: String,
         fileName: String,
         startPositionSeconds: Double,
-        ownerID: String
+        ownerID: String,
+        mediaID: String
     ) {
         self.dataSource = dataSource
         self.contentType = contentType
         self.fileName = fileName
         self.startPositionSeconds = startPositionSeconds
         self.ownerID = ownerID
-        self.resourceLoader = SMBResourceLoaderDelegate(
-            dataSource: dataSource,
-            contentType: contentType,
-            ownerID: ownerID
-        )
+        self.mediaID = mediaID
     }
 
     // MARK: - ライフサイクル
@@ -68,7 +76,7 @@ final class AVPlayerVideoController: @unchecked Sendable {
         // カスタムスキームにすることで AVPlayer のロードを ResourceLoader へ委譲する。
         let encodedName = fileName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? "stream"
         guard let url = URL(string: "\(SMBResourceLoaderDelegate.scheme)://stream/\(encodedName)") else {
-            onFailed?(nil)
+            reportFailureOnce(nil)
             return
         }
         let asset = AVURLAsset(url: url)
@@ -89,7 +97,9 @@ final class AVPlayerVideoController: @unchecked Sendable {
 
         observe(item: item)
         player.replaceCurrentItem(with: item)
-        print("[AVPlayer] load | playerID: \(ownerID) | file: \(fileName) | startPosition: \(startPositionSeconds)s")
+        MediaDiagnostics.playback(
+            "event=avplayer_load mediaID=\(mediaID) playerID=\(ownerID) startSeconds=\(startPositionSeconds)"
+        )
     }
 
     func markDrawableReady() {
@@ -123,7 +133,7 @@ final class AVPlayerVideoController: @unchecked Sendable {
         playerItem = nil
         asset = nil
         didReportPresentationSize = false
-        print("[AVPlayer] teardown | playerID: \(ownerID) | file: \(fileName)")
+        MediaDiagnostics.playback("event=avplayer_teardown mediaID=\(mediaID) playerID=\(ownerID)")
     }
 
     // MARK: - 操作
@@ -225,8 +235,11 @@ final class AVPlayerVideoController: @unchecked Sendable {
             applyStartPositionIfNeeded()
             startPlaybackIfReady()
         case .failed:
-            print("[AVPlayer] item failed | playerID: \(ownerID) | file: \(fileName) | error: \(String(describing: error))")
-            onFailed?(error)
+            let errorCode = error.map(MediaDiagnostics.errorCode) ?? "domain=unknown code=0"
+            MediaDiagnostics.playback(
+                "event=avplayer_item_failed mediaID=\(mediaID) playerID=\(ownerID) \(errorCode)"
+            )
+            reportFailureOnce(error)
         default:
             break
         }
@@ -265,6 +278,12 @@ final class AVPlayerVideoController: @unchecked Sendable {
         guard isItemReady, isDrawableReady, !didStartPlayback else { return }
         didStartPlayback = true
         play()
+    }
+
+    private func reportFailureOnce(_ error: Error?) {
+        guard !didReportFailure else { return }
+        didReportFailure = true
+        onFailed?(error)
     }
 }
 

@@ -106,6 +106,12 @@ final class FileBrowserViewModel {
     // MARK: - ディレクトリ操作
 
     func loadDirectory() async {
+        let browseID = MediaDiagnostics.mediaID(
+            sourceID: "remote:\(connection.id.uuidString)",
+            path: currentPath
+        )
+        let interval = MediaDiagnostics.begin("DirectoryLoad", mediaID: browseID)
+        let startedAt = CFAbsoluteTimeGetCurrent()
         isNetworkWorkSuspended = false
         isLoading = true
         defer { isLoading = false }
@@ -113,10 +119,19 @@ final class FileBrowserViewModel {
             let fetched = try await fileRepository.listDirectory(at: currentPath)
             items = sortService.sort(fetched, by: sortKey, order: sortOrder, foldersFirst: foldersFirst)
             errorMessage = nil
+            let elapsedMilliseconds = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
+            MediaDiagnostics.performance(
+                "event=directory_loaded sourceID=\(browseID) count=\(items.count) elapsedMs=\(elapsedMilliseconds)"
+            )
+            MediaDiagnostics.end(interval, mediaID: browseID, result: "count=\(items.count)")
             startVideoFileWarmUp()
         } catch {
             items = []
             errorMessage = error.localizedDescription
+            MediaDiagnostics.performance(
+                "event=directory_failed sourceID=\(browseID) \(MediaDiagnostics.errorCode(error))"
+            )
+            MediaDiagnostics.end(interval, mediaID: browseID, result: "failed")
         }
     }
 
@@ -236,8 +251,7 @@ final class FileBrowserViewModel {
     /// 選択した画像を共有キャッシュと現在の表示へ反映する。
     func selectThumbnail(_ image: UIImage, for item: DirectoryItem) {
         let key = cacheKey(for: item)
-        thumbnailService?.store(image, for: key)
-        thumbnails[key] = image
+        thumbnails[key] = thumbnailService?.store(image, for: key) ?? image
     }
 
     private func startVideoFileWarmUp() {
@@ -247,6 +261,19 @@ final class FileBrowserViewModel {
               let smbClientManager else { return }
 
         warmUpTask = Task {
+            let browseID = MediaDiagnostics.mediaID(
+                sourceID: "remote:\(connection.id.uuidString)",
+                path: currentPath
+            )
+            let interval = MediaDiagnostics.begin("SMBWarmUp", mediaID: browseID)
+            let startedAt = CFAbsoluteTimeGetCurrent()
+            defer {
+                let result = Task.isCancelled ? "cancelled" : "completed"
+                MediaDiagnostics.performance(
+                    "event=warmup_end sourceID=\(browseID) result=\(result) elapsedMs=\(Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000))"
+                )
+                MediaDiagnostics.end(interval, mediaID: browseID, result: result)
+            }
             if let firstVideo = items.first(where: { $0.isVideo }) {
                 try? await smbClientManager.warmUpFile(for: connection, at: firstVideo.path)
                 return

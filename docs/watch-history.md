@@ -23,7 +23,9 @@
 
 ## upsertのルール
 
-保存キー: `nasConfigId + filePath` の組み合わせ。
+照合キー: `sourceID` ＋ `fileId`（0より大きければ優先）、無ければ `filePath`。
+（`sourceID` が空のときは `connectionId` から復元。既存レコードの `fileId` が未設定なら照合時に埋める。）
+これにより、フォルダ整理でファイルを移動しても `fileId` で同一レコードを辿れる。
 
 - レコードが存在しない → 新規INSERT
 - レコードが存在する → `lastPositionSeconds` と `watchedAt` をUPDATE
@@ -34,8 +36,9 @@
 
 ## 視聴完了の判定
 
-総時間の95%以上まで再生した場合を「視聴完了」とみなす。
+残り時間が10秒以内（`ResumePositionPolicy.completionThresholdRemainingSeconds = 10.0`）まで再生した場合を「視聴完了」とみなす。
 視聴完了した動画を次回開く場合は先頭（0秒）から再生する。
+※パーセント判定（旧: 95%）ではなく、終端からの絶対秒で判定する（2026-07-20 実装と照合）。
 
 ---
 

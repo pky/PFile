@@ -13,7 +13,9 @@ NAS 上の大きい動画ファイルを iPhone / iPad で安定して再生す�
 - 日本語ファイル名や認証付き SMB でも扱いやすいこと
 - アプリ側の保守範囲が大きくなりすぎないこと
 
-## 結論
+## 結論（調査時点）
+
+※以下は調査時点の結論。最終実装は冒頭注記のとおり「MP4/MOV系はAVPlayer（SMBResourceLoaderDelegate + AMSMB2のバイト範囲読み込み）、MKVなど非対応フォーマットはVLCKitフォールバック」に変更済み。
 
 PFile の動画再生は MobileVLCKit に `smb://` URL を直接渡す direct SMB 経路を優先する。
 

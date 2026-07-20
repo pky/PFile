@@ -1,5 +1,7 @@
 # ファイル操作設計
 
+> 実装状況（2026-07-20 実装と照合）: 本ドキュメントは設計仕様。`FileRepository` プロトコルには upload/download/move/copy/delete/rename/createDirectory を定義し、SMB/ローカルの実装も存在するが、ファイルブラウザUI（コンテキストメニュー・選択モード・各種シート）にはまだ配線されておらず、ユーザーからは実行できない（`FileBrowserViewModel` は `listDirectory` のみ使用）。以下は「土台は用意済み・UI未接続」の状態に対する設計。
+
 ---
 
 ## 対応操作一覧

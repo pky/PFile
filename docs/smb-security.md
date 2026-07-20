@@ -84,8 +84,7 @@ NASConfigをSwiftDataから削除する前に、必ずKeychainのエントリを
 
 ### ネットワーク
 
-- App Transport Security（ATS）の例外はプライベートIPアドレス帯のみ許可
-  - 192.168.x.x / 10.x.x.x / 172.16.x.x〜172.31.x.x
+- App Transport Security（ATS）の例外設定は行っていない。SMB（AMSMB2）はHTTP(S)ではなくTCPに直結するため、そもそもATSの対象外であり、`NSAppTransportSecurity` はInfo.plistに定義していない（2026-07-20 実装と照合。プライベートIP帯のみ許可という旧記述は誤り）。
 - ローカルネットワーク使用の権限（`NSLocalNetworkUsageDescription`）をInfo.plistに設定
 
 ### メモリ

@@ -4,9 +4,9 @@ import UIKit
 
 struct ThumbnailGenerationPolicyTests {
 
-    @Test("通常生成は10%地点と20%地点を使う")
-    func automaticGenerationUsesTenAndTwentyPercentPositions() {
-        #expect(ThumbnailGenerationPolicy.automaticPositions == [0.10, 0.20])
+    @Test("通常生成は時間帯を変えて3地点を試す")
+    func automaticGenerationUsesThreePositions() {
+        #expect(ThumbnailGenerationPolicy.automaticPositions == [0.10, 0.20, 0.50])
     }
 
     @Test("手動候補は通常生成より広い時間帯を使う")
@@ -16,6 +16,7 @@ struct ThumbnailGenerationPolicyTests {
         #expect(ThumbnailGenerationPolicy.choicePositions.first == 0.04)
         #expect(ThumbnailGenerationPolicy.choicePositions.last == 0.92)
         #expect(ThumbnailGenerationPolicy.maximumChoiceCount == 8)
+        #expect(ThumbnailGenerationPolicy.maximumConsecutiveChoiceFailures == 2)
     }
 
     @Test("通常生成は黒画像を保存対象にしない")
@@ -38,14 +39,49 @@ struct ThumbnailGenerationPolicyTests {
         #expect(!ThumbnailImageAnalyzer.isBlack(image))
     }
 
-    @Test("手動候補は単色グレー画像を除外する")
-    func manualChoicesRejectSolidGrayImage() {
+    @Test("暗い部分が多くても被写体が見える画像は採用する")
+    func automaticGenerationAcceptsDarkVisibleImage() {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 100)).image { context in
+            context.cgContext.setFillColor(UIColor.black.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 70, height: 100))
+            context.cgContext.setFillColor(UIColor.white.cgColor)
+            context.cgContext.fill(CGRect(x: 70, y: 0, width: 30, height: 100))
+        }
+
+        #expect(!ThumbnailImageAnalyzer.isBlack(image))
+    }
+
+    @Test("手動候補は黒でない単色画像も採用する")
+    func manualChoicesAcceptSolidGrayImage() {
         let image = UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).image { context in
             context.cgContext.setFillColor(UIColor.gray.cgColor)
             context.cgContext.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
         }
 
         #expect(ThumbnailImageAnalyzer.isLowInformation(image))
+        #expect(ThumbnailGenerationPolicy.shouldIncludeChoice(
+            isBlack: ThumbnailImageAnalyzer.isBlack(image)
+        ))
+    }
+
+    @Test("手動候補は連続失敗を上限で打ち切る")
+    func manualChoicesStopAfterConsecutiveFailures() {
+        #expect(!ThumbnailGenerationPolicy.shouldStopChoiceSearch(consecutiveFailures: 1))
+        #expect(ThumbnailGenerationPolicy.shouldStopChoiceSearch(consecutiveFailures: 2))
+    }
+
+    @Test("手動候補の類似判定は色の違いを区別する")
+    func manualChoicesDistinguishDifferentColors() {
+        let redImage = UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).image { context in
+            context.cgContext.setFillColor(UIColor.red.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        }
+        let greenImage = UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).image { context in
+            context.cgContext.setFillColor(UIColor.green.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        }
+
+        #expect(!ThumbnailImageAnalyzer.areVisuallySimilar(redImage, greenImage))
     }
 
     @Test("手動候補は明暗差のある画像を採用する")
@@ -76,6 +112,26 @@ struct VideoResolutionFormatterTests {
 }
 
 struct SMBHTTPResponsePlannerTests {
+
+    @Test("動画拡張子をHTTPパスとContent-Typeへ反映する")
+    func mediaDescriptorUsesVideoExtension() {
+        #expect(
+            SMBHTTPMediaDescriptor.make(filePath: "/folder/movie.mp4")
+                == SMBHTTPMediaDescriptor(requestPath: "/stream.mp4", contentType: "video/mp4")
+        )
+        #expect(
+            SMBHTTPMediaDescriptor.make(filePath: "/folder/movie.mkv")
+                == SMBHTTPMediaDescriptor(requestPath: "/stream.mkv", contentType: "video/x-matroska")
+        )
+    }
+
+    @Test("不正な拡張子はHTTPパスへ埋め込まない")
+    func mediaDescriptorRejectsUnsafeExtension() {
+        #expect(
+            SMBHTTPMediaDescriptor.make(filePath: "/folder/movie.bad-ext")
+                == SMBHTTPMediaDescriptor(requestPath: "/stream", contentType: "application/octet-stream")
+        )
+    }
 
     @Test("Range なしは 200 OK で全体を返す")
     func fullResponseWithoutRange() throws {

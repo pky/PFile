@@ -75,6 +75,7 @@ final class VideoPlayerViewModel: NSObject {
 
     let player = VLCMediaPlayer()
     let playerID: String
+    let mediaID: String
 
     private let playbackHistoryService: PlaybackHistoryService
     private let smbClientManager: SMBClientManager
@@ -87,6 +88,7 @@ final class VideoPlayerViewModel: NSObject {
     private var startupDidLogPlaying = false
     private var startupPlaybackPath: StartupPlaybackPath?
     private var didFallbackToProxy = false
+    private var didFallbackFromAVPlayer = false
     private var startupFallbackTask: Task<Void, Never>?
     private var startupTimelineWatchdogTask: Task<Void, Never>?
     private var currentStartupStartPositionSeconds: Double = 0
@@ -103,6 +105,8 @@ final class VideoPlayerViewModel: NSObject {
     private var hasObservedPlayableTimeline = false
     private var didLogStartupBufferingBeforeTimeline = false
     private var didRecordPlayerError = false
+    private var startupInterval: MediaDiagnostics.Interval?
+    private var seekInterval: MediaDiagnostics.Interval?
 
     private struct InteractiveSeekDiagnostics {
         let startedAt: CFAbsoluteTime
@@ -183,27 +187,31 @@ final class VideoPlayerViewModel: NSObject {
         self.connection = connection
         self.item = item
         self.playerID = UUID().uuidString
+        self.mediaID = MediaDiagnostics.mediaID(
+            sourceID: "remote:\(connection.id.uuidString)",
+            path: item.path
+        )
         self.playbackHistoryService = playbackHistoryService
         self.smbClientManager = smbClientManager
         super.init()
         player.delegate = self
         VideoPlayerDiagnostics.playerDidInit(playerID: playerID)
-        print("[VideoPlayer] init | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=init mediaID=\(mediaID) playerID=\(playerID)")
         setupMedia(startPositionSeconds: startPositionSeconds)
     }
 
     deinit {
-        print("[VideoPlayer] deinit start | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=deinit_begin mediaID=\(mediaID) playerID=\(playerID)")
         tearDownPlayback(trigger: "deinit")
         VideoPlayerDiagnostics.playerDidDeinit(playerID: playerID)
-        print("[VideoPlayer] deinit end | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=deinit_end mediaID=\(mediaID) playerID=\(playerID)")
     }
 
     func cancelSetup() {
         if setupTask != nil {
             FirebaseSupport.logCrashlytics("[VideoPlayer] cancelSetup | playerID: \(playerID)")
             FirebaseSupport.logEvent("vp_setup_cancelled")
-            print("[VideoPlayer] cancelSetup | playerID: \(playerID) | file: \(item.name)")
+            MediaDiagnostics.playback("event=setup_cancelled mediaID=\(mediaID) playerID=\(playerID)")
         }
         startupFallbackTask?.cancel()
         startupFallbackTask = nil
@@ -423,7 +431,10 @@ final class VideoPlayerViewModel: NSObject {
             startedPlaybackSeconds: currentPositionSeconds,
             startedRequestSeconds: startedSeconds
         )
-        print("[SeekDiag] begin | playbackSeconds: \(String(format: "%.2f", currentPositionSeconds)) | requestSeconds: \(String(format: "%.2f", startedSeconds)) | playerID: \(playerID) | file: \(item.name)")
+        seekInterval = MediaDiagnostics.begin("MediaSeek", mediaID: mediaID)
+        MediaDiagnostics.playback(
+            "event=seek_begin mediaID=\(mediaID) playerID=\(playerID) playbackSeconds=\(String(format: "%.2f", currentPositionSeconds)) requestSeconds=\(String(format: "%.2f", startedSeconds))"
+        )
     }
 
     private func recordInteractiveSeekRequest(seconds: Double) {
@@ -441,7 +452,9 @@ final class VideoPlayerViewModel: NSObject {
             observedAt: CFAbsoluteTimeGetCurrent()
         )
         if let firstResponse {
-            print("[SeekDiag] firstResponse | responseMs: \(firstResponse.responseMs) | deltaSeconds: \(String(format: "%.2f", firstResponse.deltaSeconds)) | observedSeconds: \(String(format: "%.2f", seconds)) | playerID: \(playerID) | file: \(item.name)")
+            MediaDiagnostics.playback(
+                "event=seek_first_response mediaID=\(mediaID) playerID=\(playerID) responseMs=\(firstResponse.responseMs) deltaSeconds=\(String(format: "%.2f", firstResponse.deltaSeconds)) observedSeconds=\(String(format: "%.2f", seconds))"
+            )
         }
     }
 
@@ -474,9 +487,13 @@ final class VideoPlayerViewModel: NSObject {
         let finalDeltaSeconds = abs(finalObservedSeconds - finalRequestedSeconds)
         let firstResponseMs = diagnostics.firstResponseMs ?? -1
         let firstResponseDeltaSeconds = diagnostics.firstResponseDeltaSeconds ?? -1
-        let line = "[SeekDiag] summary | dragMs: \(dragMs) | seekRequests: \(diagnostics.requestCount) | firstResponseMs: \(firstResponseMs) | firstResponseDeltaSeconds: \(String(format: "%.2f", firstResponseDeltaSeconds)) | latencyCount: \(diagnostics.latencyCount) | avgLatencyMs: \(avgLatencyMs) | maxLatencyMs: \(diagnostics.maxLatencyMs) | bufferingDuringSeek: \(diagnostics.bufferingDuringSeek) | finalRequestedSeconds: \(String(format: "%.2f", finalRequestedSeconds)) | finalObservedSeconds: \(String(format: "%.2f", finalObservedSeconds)) | finalDeltaSeconds: \(String(format: "%.2f", finalDeltaSeconds)) | playerID: \(playerID) | file: \(item.name)"
+        let line = "event=seek_summary mediaID=\(mediaID) playerID=\(playerID) dragMs=\(dragMs) seekRequests=\(diagnostics.requestCount) firstResponseMs=\(firstResponseMs) firstResponseDeltaSeconds=\(String(format: "%.2f", firstResponseDeltaSeconds)) latencyCount=\(diagnostics.latencyCount) avgLatencyMs=\(avgLatencyMs) maxLatencyMs=\(diagnostics.maxLatencyMs) bufferingDuringSeek=\(diagnostics.bufferingDuringSeek) finalRequestedSeconds=\(String(format: "%.2f", finalRequestedSeconds)) finalObservedSeconds=\(String(format: "%.2f", finalObservedSeconds)) finalDeltaSeconds=\(String(format: "%.2f", finalDeltaSeconds))"
         let telemetryLine = "[SeekDiag] summary | dragMs: \(dragMs) | seekRequests: \(diagnostics.requestCount) | firstResponseMs: \(firstResponseMs) | firstResponseDeltaSeconds: \(String(format: "%.2f", firstResponseDeltaSeconds)) | latencyCount: \(diagnostics.latencyCount) | avgLatencyMs: \(avgLatencyMs) | maxLatencyMs: \(diagnostics.maxLatencyMs) | bufferingDuringSeek: \(diagnostics.bufferingDuringSeek) | finalRequestedSeconds: \(String(format: "%.2f", finalRequestedSeconds)) | finalObservedSeconds: \(String(format: "%.2f", finalObservedSeconds)) | finalDeltaSeconds: \(String(format: "%.2f", finalDeltaSeconds)) | playerID: \(playerID)"
-        print(line)
+        MediaDiagnostics.playback(line)
+        if let seekInterval {
+            MediaDiagnostics.end(seekInterval, mediaID: mediaID, result: "delta=\(String(format: "%.2f", finalDeltaSeconds))")
+            self.seekInterval = nil
+        }
         FirebaseSupport.logCrashlytics(telemetryLine)
     }
 
@@ -496,14 +513,14 @@ final class VideoPlayerViewModel: NSObject {
 
     func playIfReady(trigger: String) {
         guard player.media != nil else {
-            print("[VideoPlayer] play skipped (media not ready) | trigger: \(trigger) | playerID: \(playerID) | file: \(item.name)")
+            MediaDiagnostics.playback("event=play_skipped mediaID=\(mediaID) playerID=\(playerID) trigger=\(trigger)")
             return
         }
         if playRequestedAt == 0 {
             playRequestedAt = CFAbsoluteTimeGetCurrent()
         }
         logStartupDiag(event: "play_requested", extra: "trigger: \(trigger)")
-        print("[VideoPlayer] play | trigger: \(trigger) | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=play mediaID=\(mediaID) playerID=\(playerID) trigger=\(trigger)")
         player.play()
     }
 
@@ -519,7 +536,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func pausePlayback(trigger: String) {
-        print("[VideoPlayer] pause | trigger: \(trigger) | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=pause mediaID=\(mediaID) playerID=\(playerID) trigger=\(trigger)")
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
             avController?.pause()
@@ -530,7 +547,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func stopPlayback(trigger: String) {
-        print("[VideoPlayer] stop | trigger: \(trigger) | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=stop mediaID=\(mediaID) playerID=\(playerID) trigger=\(trigger)")
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
             avController?.pause()
@@ -541,7 +558,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func tearDownPlayback(trigger: String) {
-        print("[VideoPlayer] teardown start | trigger: \(trigger) | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=teardown_begin mediaID=\(mediaID) playerID=\(playerID) trigger=\(trigger)")
         VideoPlayerDiagnostics.logMemory(event: "teardown_start_\(trigger)", playerID: playerID)
         isTearingDownPlayback = true
         startupFallbackTask?.cancel()
@@ -570,6 +587,7 @@ final class VideoPlayerViewModel: NSObject {
 #endif
         startupPlaybackPath = nil
         didFallbackToProxy = false
+        didFallbackFromAVPlayer = false
         isInteractiveSeeking = false
         isDrawableReady = false
         currentStartupStartPositionSeconds = 0
@@ -586,7 +604,7 @@ final class VideoPlayerViewModel: NSObject {
         hasObservedPlayableTimeline = false
         didLogStartupBufferingBeforeTimeline = false
         VideoPlayerDiagnostics.logMemory(event: "teardown_end_\(trigger)", playerID: playerID)
-        print("[VideoPlayer] teardown end | trigger: \(trigger) | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=teardown_end mediaID=\(mediaID) playerID=\(playerID) trigger=\(trigger)")
     }
 
     private func captureThumbnailForHistory() async -> Data? {
@@ -645,7 +663,7 @@ final class VideoPlayerViewModel: NSObject {
     // MARK: - Private
 
     private func setupMedia(startPositionSeconds: Double) {
-        print("[VideoPlayer] setupMedia | playerID: \(playerID) | startPosition: \(startPositionSeconds)s | file: \(item.name)")
+        MediaDiagnostics.playback("event=setup_begin mediaID=\(mediaID) playerID=\(playerID) startSeconds=\(startPositionSeconds)")
         isTearingDownPlayback = false
         resetStartupDiagnostics()
         logStartupDiag(event: "begin")
@@ -669,7 +687,7 @@ final class VideoPlayerViewModel: NSObject {
         didFallbackToProxy = false
         guard let url = buildSMBURL() else {
             errorMessage = "メディアURLの構築に失敗しました"
-            print("[VideoPlayer] Failed to build direct SMB URL | playerID: \(playerID) | file: \(item.name) | path: \(item.path)")
+            MediaDiagnostics.playback("event=url_build_failed mediaID=\(mediaID) playerID=\(playerID) route=direct_smb")
             return
         }
         attachDirectSMBMedia(url: url, startPositionSeconds: startPositionSeconds)
@@ -702,6 +720,14 @@ final class VideoPlayerViewModel: NSObject {
             )
 
             await MainActor.run {
+                guard !self.isTearingDownPlayback else {
+                    Task {
+                        try? await SMB2OperationGate.runAsync {
+                            try await client.disconnectShare()
+                        }
+                    }
+                    return
+                }
                 self.attachAVPlayerMedia(
                     client: client,
                     dataSource: dataSource,
@@ -709,11 +735,16 @@ final class VideoPlayerViewModel: NSObject {
                 )
             }
         } catch {
+            guard !Task.isCancelled else { return }
             await MainActor.run {
-                print("[VideoPlayer] AVPlayer setup failed; fallback to direct SMB | playerID: \(self.playerID) | file: \(self.item.name) | error: \(error)")
-                self.fallbackToDirectSMBAfterHTTPProxyFailure(
+                guard !self.isTearingDownPlayback else { return }
+                MediaDiagnostics.playback(
+                    "event=avplayer_setup_failed mediaID=\(self.mediaID) playerID=\(self.playerID) fallback=http_proxy \(MediaDiagnostics.errorCode(error))"
+                )
+                self.startAVPlayerFallback(
                     startPositionSeconds: startPositionSeconds,
-                    error: error
+                    error: error,
+                    reason: "setup_failed"
                 )
             }
         }
@@ -751,7 +782,8 @@ final class VideoPlayerViewModel: NSObject {
             contentType: contentType,
             fileName: item.name,
             startPositionSeconds: startPositionSeconds,
-            ownerID: playerID
+            ownerID: playerID,
+            mediaID: mediaID
         )
         wireAVController(controller)
         avController = controller
@@ -803,12 +835,62 @@ final class VideoPlayerViewModel: NSObject {
                 // 実際に再生が始まったら意図も再生中で確定する（初回自動再生・再開の両方を拾う）。
                 self.avIntendsToPlay = true
                 self.updateAVBuffering(false)
+                if !self.startupDidLogPlaying {
+                    self.startupDidLogPlaying = true
+                    self.logStartupDiag(event: "first_playing")
+                    self.finishStartupInterval(result: "av_player")
+                }
             }
         }
-        controller.onFailed = { [weak self] error in
-            guard let self, !self.isTearingDownPlayback else { return }
-            self.errorMessage = "再生エラーが発生しました"
-            print("[VideoPlayer] AVPlayer error | playerID: \(self.playerID) | file: \(self.item.name) | error: \(String(describing: error))")
+        controller.onFailed = { [weak self, weak controller] error in
+            guard let self,
+                  let controller,
+                  self.avController === controller,
+                  !self.isTearingDownPlayback else { return }
+            let errorCode = error.map(MediaDiagnostics.errorCode) ?? "domain=unknown code=0"
+            MediaDiagnostics.playback(
+                "event=avplayer_failed mediaID=\(self.mediaID) playerID=\(self.playerID) fallback=http_proxy \(errorCode)"
+            )
+            self.startAVPlayerFallback(
+                startPositionSeconds: max(
+                    self.currentPositionSeconds,
+                    controller.currentPositionSeconds
+                ),
+                error: error,
+                reason: "runtime_failed"
+            )
+        }
+    }
+
+    private func startAVPlayerFallback(
+        startPositionSeconds: Double,
+        error: Error?,
+        reason: String
+    ) {
+        guard !didFallbackFromAVPlayer, !isTearingDownPlayback else {
+            MediaDiagnostics.playback(
+                "event=avplayer_fallback_skipped mediaID=\(mediaID) playerID=\(playerID) reason=already_attempted"
+            )
+            return
+        }
+
+        didFallbackFromAVPlayer = true
+        let shouldAutoplay = !hasEverStartedPlaying || avIntendsToPlay
+        let errorCode = error.map(MediaDiagnostics.errorCode) ?? "domain=unknown code=0"
+        MediaDiagnostics.playback(
+            "event=avplayer_fallback_begin mediaID=\(mediaID) playerID=\(playerID) route=http_proxy reason=\(reason) startSeconds=\(startPositionSeconds) autoplay=\(shouldAutoplay) \(errorCode)"
+        )
+
+        tearDownAVPlayer()
+        errorMessage = nil
+        isBuffering = true
+        currentPositionSeconds = startPositionSeconds
+        startupPlaybackPath = .httpProxy
+        setupTask = Task { [weak self] in
+            await self?.prepareHTTPProxyMedia(
+                startPositionSeconds: startPositionSeconds,
+                autoplay: shouldAutoplay
+            )
         }
     }
 
@@ -846,7 +928,10 @@ final class VideoPlayerViewModel: NSObject {
         }
     }
 
-    private func prepareHTTPProxyMedia(startPositionSeconds: Double) async {
+    private func prepareHTTPProxyMedia(
+        startPositionSeconds: Double,
+        autoplay: Bool
+    ) async {
         do {
             let credential = try smbClientManager.loadCredential(for: connection)
             let shareName = credential.shareName == "/" ? "" : credential.shareName
@@ -871,17 +956,25 @@ final class VideoPlayerViewModel: NSObject {
             }
 
             await MainActor.run {
+                guard !self.isTearingDownPlayback else {
+                    server.stop()
+                    return
+                }
                 self.attachHTTPProxyMedia(
                     server: server,
                     localURL: localURL,
-                    startPositionSeconds: startPositionSeconds
+                    startPositionSeconds: startPositionSeconds,
+                    autoplay: autoplay
                 )
             }
         } catch {
+            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard !self.isTearingDownPlayback else { return }
                 self.fallbackToDirectSMBAfterHTTPProxyFailure(
                     startPositionSeconds: startPositionSeconds,
-                    error: error
+                    error: error,
+                    autoplay: autoplay
                 )
             }
         }
@@ -890,7 +983,8 @@ final class VideoPlayerViewModel: NSObject {
     private func attachHTTPProxyMedia(
         server: SMBStreamingServer,
         localURL: URL,
-        startPositionSeconds: Double
+        startPositionSeconds: Double,
+        autoplay: Bool
     ) {
         currentStartupStartPositionSeconds = startPositionSeconds
         hasObservedPlayableTimeline = false
@@ -913,7 +1007,7 @@ final class VideoPlayerViewModel: NSObject {
 
         let networkCaching = 300
         let fileCaching = 300
-        print("[VideoPlayer] Using HTTP proxy v2: \(localURL.absoluteString) | startPosition: \(startPositionSeconds)s | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=route_begin mediaID=\(mediaID) playerID=\(playerID) route=http_proxy startSeconds=\(startPositionSeconds)")
         let media = VLCMedia(url: localURL)
         media.delegate = self
         media.addOption(":network-caching=\(networkCaching)")
@@ -930,27 +1024,42 @@ final class VideoPlayerViewModel: NSObject {
             event: "media_attached",
             extra: "path: http_proxy_v2 | networkCaching: \(networkCaching) | fileCaching: \(fileCaching) | parse: network_timeout_10000 | startPosition: \(startPositionSeconds)"
         )
-        if isDrawableReady {
+        if isDrawableReady, autoplay {
             playIfReady(trigger: "http_proxy_ready")
         }
     }
 
-    private func fallbackToDirectSMBAfterHTTPProxyFailure(startPositionSeconds: Double, error: Error) {
+    private func fallbackToDirectSMBAfterHTTPProxyFailure(
+        startPositionSeconds: Double,
+        error: Error,
+        autoplay: Bool
+    ) {
         setupTask = nil
-        print("[VideoPlayer] HTTP proxy setup failed; fallback to direct SMB | playerID: \(playerID) | file: \(item.name) | error: \(error)")
+        MediaDiagnostics.playback(
+            "event=proxy_setup_failed mediaID=\(mediaID) playerID=\(playerID) fallback=direct_smb \(MediaDiagnostics.errorCode(error))"
+        )
         guard let url = buildSMBURL() else {
             errorMessage = "メディアURLの構築に失敗しました"
-            print("[VideoPlayer] Failed to build fallback SMB URL | playerID: \(playerID) | file: \(item.name) | path: \(item.path)")
+            MediaDiagnostics.playback("event=url_build_failed mediaID=\(mediaID) playerID=\(playerID) route=fallback_direct_smb")
             return
         }
-        attachDirectSMBMedia(url: url, startPositionSeconds: startPositionSeconds)
+        attachDirectSMBMedia(
+            url: url,
+            startPositionSeconds: startPositionSeconds,
+            autoplay: autoplay
+        )
     }
 
-    private func attachDirectSMBMedia(url: URL, startPositionSeconds: Double) {
+    private func attachDirectSMBMedia(
+        url: URL,
+        startPositionSeconds: Double,
+        autoplay: Bool = true
+    ) {
         currentStartupStartPositionSeconds = startPositionSeconds
         hasObservedPlayableTimeline = false
         didLogStartupBufferingBeforeTimeline = false
         lastObservedPlaybackTimeMs = nil
+        startupPlaybackPath = .directSMB
 
         streamingServer?.stop()
         streamingServer = nil
@@ -964,11 +1073,10 @@ final class VideoPlayerViewModel: NSObject {
             }
         }
 
-        let sanitizedURL = sanitizeURL(url)
         let cachingPolicy = VideoPlayerCachingPolicy.directSMB(fileSize: item.size)
         let networkCaching = cachingPolicy.networkCachingMilliseconds
         let smbCaching = cachingPolicy.inputCachingMilliseconds
-        print("[VideoPlayer] Using direct SMB: \(sanitizedURL) | startPosition: \(startPositionSeconds)s | startupRetry: \(directSMBStartupRetryCount) | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=route_begin mediaID=\(mediaID) playerID=\(playerID) route=direct_smb startSeconds=\(startPositionSeconds) retry=\(directSMBStartupRetryCount)")
         let media = VLCMedia(url: url)
         media.delegate = self
         media.addOption(":network-caching=\(networkCaching)")
@@ -995,7 +1103,7 @@ final class VideoPlayerViewModel: NSObject {
             event: "media_attached",
             extra: "path: direct_smb | networkCaching: \(networkCaching) | smbCaching: \(smbCaching) | fileCaching: \(smbCaching) | hwDecode: videotoolbox | parse: network_timeout_10000 | startPosition: \(startPositionSeconds) | startupRetry: \(directSMBStartupRetryCount)"
         )
-        if isDrawableReady {
+        if isDrawableReady, autoplay {
             playIfReady(trigger: "direct_smb_ready")
         }
     }
@@ -1026,13 +1134,13 @@ final class VideoPlayerViewModel: NSObject {
               !isTearingDownPlayback else { return }
 
         guard let url = buildSMBURL() else {
-            print("[VideoPlayer] direct SMB startup retry skipped (url build failed) | playerID: \(playerID) | file: \(item.name)")
+            MediaDiagnostics.playback("event=startup_retry_skipped mediaID=\(mediaID) playerID=\(playerID) reason=url_build_failed")
             return
         }
 
         directSMBStartupRetryCount += 1
         let retryStartPosition = max(0, currentStartupStartPositionSeconds - 10)
-        print("[VideoPlayer] retry direct SMB startup before timeline | originalStart: \(currentStartupStartPositionSeconds)s | retryStart: \(retryStartPosition)s | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=startup_retry mediaID=\(mediaID) playerID=\(playerID) originalStart=\(currentStartupStartPositionSeconds) retryStart=\(retryStartPosition)")
         logStartupDiag(
             event: "direct_smb_startup_retry",
             extra: "originalStart: \(currentStartupStartPositionSeconds) | retryStart: \(retryStartPosition) | reason: timeline_not_ready"
@@ -1064,8 +1172,7 @@ final class VideoPlayerViewModel: NSObject {
                 client: client,
                 path: resolvedPath,
                 fileSize: fileSize,
-                ownerID: playerID,
-                fileName: item.name
+                ownerID: playerID
             )
 
             if Task.isCancelled {
@@ -1088,7 +1195,7 @@ final class VideoPlayerViewModel: NSObject {
         } catch {
             await MainActor.run {
                 self.errorMessage = "メディアストリームの準備に失敗しました"
-                print("[VideoPlayer] SMB stream setup failed | playerID: \(self.playerID) | file: \(self.item.name) | error: \(error)")
+                MediaDiagnostics.playback("event=smb_stream_setup_failed mediaID=\(self.mediaID) playerID=\(self.playerID) \(MediaDiagnostics.errorCode(error))")
             }
         }
     }
@@ -1112,7 +1219,7 @@ final class VideoPlayerViewModel: NSObject {
         streamClient = client
 
         let inputCaching = VideoPlayerCachingPolicy.directSMB(fileSize: Int64(fileSize)).inputCachingMilliseconds
-        print("[VideoPlayer] Using SMB stream | playerID: \(playerID) | file: \(item.name) | path: \(resolvedPath) | size: \(fileSize)")
+        MediaDiagnostics.playback("event=route_begin mediaID=\(mediaID) playerID=\(playerID) route=smb_stream size=\(fileSize)")
         let media = VLCMedia(stream: stream)
         media.delegate = self
         media.addOption(":file-caching=\(inputCaching)")
@@ -1138,14 +1245,14 @@ final class VideoPlayerViewModel: NSObject {
         guard normalized != original else { return normalized }
 
         if await smbStreamPathExists(client: client, path: normalized) {
-            print("[VideoPlayer] SMB stream resolved NFC path | playerID: \(playerID) | file: \(item.name)")
+            MediaDiagnostics.resource("event=path_resolved mediaID=\(mediaID) playerID=\(playerID) normalization=nfc")
             return normalized
         }
         if await smbStreamPathExists(client: client, path: original) {
-            print("[VideoPlayer] SMB stream resolved original path | playerID: \(playerID) | file: \(item.name)")
+            MediaDiagnostics.resource("event=path_resolved mediaID=\(mediaID) playerID=\(playerID) normalization=original")
             return original
         }
-        print("[VideoPlayer] SMB stream path not confirmed; using NFC | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.resource("event=path_unconfirmed mediaID=\(mediaID) playerID=\(playerID) fallback=nfc")
         return normalized
     }
 
@@ -1181,12 +1288,10 @@ final class VideoPlayerViewModel: NSObject {
     private func setupMediaDirect(startPositionSeconds: Double) {
         guard let url = buildSMBURL() else {
             errorMessage = "メディアURLの構築に失敗しました"
-            print("[VideoPlayer] Failed to build SMB URL for: \(item.path)")
+            MediaDiagnostics.playback("event=url_build_failed mediaID=\(mediaID) playerID=\(playerID) route=simulator_direct")
             return
         }
-        let sanitizedURL = sanitizeURL(url)
-        print("[VideoPlayer] Setting up media (direct): \(sanitizedURL)")
-        print("[VideoPlayer] File name: \(item.name), path: \(item.path), playerID: \(playerID)")
+        MediaDiagnostics.playback("event=route_begin mediaID=\(mediaID) playerID=\(playerID) route=simulator_direct")
         let media = VLCMedia(url: url)
         media.delegate = self
         if startPositionSeconds > 0 {
@@ -1196,13 +1301,7 @@ final class VideoPlayerViewModel: NSObject {
         player.media = media
         mediaAttachedAt = CFAbsoluteTimeGetCurrent()
         logStartupDiag(event: "media_attached")
-        print("[VideoPlayer] media attached | playerID: \(playerID) | url: \(sanitizedURL) | file: \(item.name)")
-    }
-
-    private func sanitizeURL(_ url: URL) -> String {
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        if components?.password != nil { components?.password = "****" }
-        return components?.url?.absoluteString ?? url.absoluteString
+        MediaDiagnostics.playback("event=media_attached mediaID=\(mediaID) playerID=\(playerID) route=simulator_direct")
     }
 
     private func buildSMBURL() -> URL? {
@@ -1245,6 +1344,10 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     private func resetStartupDiagnostics() {
+        if let startupInterval {
+            MediaDiagnostics.end(startupInterval, mediaID: mediaID, result: "restarted")
+        }
+        startupInterval = MediaDiagnostics.begin("MediaStartup", mediaID: mediaID)
         startupFallbackTask?.cancel()
         startupFallbackTask = nil
         startupTimelineWatchdogTask?.cancel()
@@ -1256,6 +1359,7 @@ final class VideoPlayerViewModel: NSObject {
         startupDidLogPlaying = false
         startupPlaybackPath = nil
         didFallbackToProxy = false
+        didFallbackFromAVPlayer = false
         currentStartupStartPositionSeconds = 0
         directSMBStartupRetryCount = 0
         isInteractiveSeeking = false
@@ -1274,17 +1378,23 @@ final class VideoPlayerViewModel: NSObject {
         didRecordPlayerError = false
     }
 
+    private func finishStartupInterval(result: String) {
+        guard let startupInterval else { return }
+        MediaDiagnostics.end(startupInterval, mediaID: mediaID, result: result)
+        self.startupInterval = nil
+    }
+
     private func logStartupDiag(event: String, extra: String? = nil) {
         let now = CFAbsoluteTimeGetCurrent()
         let totalMs = startupBeganAt > 0 ? Int((now - startupBeganAt) * 1000) : -1
         let proxyMs = proxyReadyAt > 0 ? Int((proxyReadyAt - startupBeganAt) * 1000) : -1
         let attachMs = mediaAttachedAt > 0 ? Int((mediaAttachedAt - startupBeganAt) * 1000) : -1
         let playMs = playRequestedAt > 0 ? Int((playRequestedAt - startupBeganAt) * 1000) : -1
-        var line = "[StartupDiag] source: VideoPlayer | playerID: \(playerID) | file: \(item.name) | event: \(event) | totalMs: \(totalMs) | proxyReadyMs: \(proxyMs) | mediaAttachedMs: \(attachMs) | playRequestedMs: \(playMs)"
+        var line = "event=startup mediaID=\(mediaID) playerID=\(playerID) stage=\(event) totalMs=\(totalMs) proxyReadyMs=\(proxyMs) mediaAttachedMs=\(attachMs) playRequestedMs=\(playMs)"
         if let extra {
             line += " | \(extra)"
         }
-        print(line)
+        MediaDiagnostics.playback(line)
     }
 
 }
@@ -1306,9 +1416,12 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
         case .stopped:    stateLabel = "stopped"
         case .ended:      stateLabel = "ended"
         case .error:      stateLabel = "error"
+        case .esAdded:    stateLabel = "es_added"
         default:          stateLabel = "unknown(\(state.rawValue))"
         }
-        print("[VideoPlayer] State changed: \(stateLabel) | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback(
+            "event=state mediaID=\(mediaID) playerID=\(playerID) state=\(stateLabel) path=\(startupPlaybackPathLabel)"
+        )
 
         switch state {
         case .opening, .buffering:
@@ -1330,6 +1443,7 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
             if !startupDidLogPlaying {
                 startupDidLogPlaying = true
                 logStartupDiag(event: "first_playing")
+                finishStartupInterval(result: startupPlaybackPathLabel)
             }
 #if !targetEnvironment(simulator)
             scheduleDirectSMBStartupTimelineWatchdog(delaySeconds: 3)
@@ -1338,14 +1452,14 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
 
         if state == .error {
             guard !isTearingDownPlayback else {
-                print("[VideoPlayer] ignored player error during teardown | playerID: \(playerID) | file: \(item.name)")
+                MediaDiagnostics.playback("event=player_error_ignored mediaID=\(mediaID) playerID=\(playerID) reason=teardown")
                 return
             }
             let parsedStatus = player.media.map { parsedStatusLabel($0.parsedStatus) } ?? "no_media"
             let trackCount = player.media?.tracksInformation.count ?? 0
             errorMessage = "再生エラーが発生しました"
             recordPlayerErrorIfNeeded(parsedStatus: parsedStatus, trackCount: trackCount)
-            print("[VideoPlayer] error context | parsedStatus: \(parsedStatus) | trackCount: \(trackCount) | playerID: \(playerID) | file: \(item.name)")
+            MediaDiagnostics.playback("event=vlc_error mediaID=\(mediaID) playerID=\(playerID) parsedStatus=\(parsedStatus) trackCount=\(trackCount)")
             logMediaDetails()
         }
 
@@ -1396,9 +1510,6 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
         print("[VideoPlayer] Media length: \(media.length.intValue) ms | playerID: \(playerID)")
         let tracks = media.tracksInformation
         print("[VideoPlayer] Track count: \(tracks.count) | playerID: \(playerID)")
-        for (i, track) in tracks.enumerated() {
-            print("[VideoPlayer]   track[\(i)] | playerID: \(playerID): \(track)")
-        }
     }
 
     private func updateResolution(from media: VLCMedia) {
@@ -1423,7 +1534,7 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
            durationSeconds == 0 {
             if !didLogStartupBufferingBeforeTimeline {
                 didLogStartupBufferingBeforeTimeline = true
-                print("[VideoPlayer] startup buffering before timeline ready | playerID: \(playerID) | file: \(item.name)")
+                MediaDiagnostics.playback("event=startup_buffering_before_timeline mediaID=\(mediaID) playerID=\(playerID)")
 #if !targetEnvironment(simulator)
                 scheduleDirectSMBStartupTimelineWatchdog(delaySeconds: 1, replacingExisting: true)
 #endif
@@ -1439,15 +1550,15 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
 
         let parsedStatus = player.media.map { parsedStatusLabel($0.parsedStatus) } ?? "no_media"
         let trackCount = player.media?.tracksInformation.count ?? 0
-        let line = "[VideoPlayer] playback interruption | state: \(stateLabel) | positionSeconds: \(positionSeconds) | durationSeconds: \(durationSeconds) | isPlaying: \(player.isPlaying) | isBuffering: \(isBuffering) | interactiveSeeking: \(isInteractiveSeeking) | lastObservedTimeMs: \(lastObservedPlaybackTimeMs ?? -1) | parsedStatus: \(parsedStatus) | trackCount: \(trackCount) | playerID: \(playerID) | file: \(item.name)"
+        let line = "event=playback_interruption mediaID=\(mediaID) playerID=\(playerID) state=\(stateLabel) positionSeconds=\(positionSeconds) durationSeconds=\(durationSeconds) isPlaying=\(player.isPlaying) isBuffering=\(isBuffering) interactiveSeeking=\(isInteractiveSeeking) lastObservedTimeMs=\(lastObservedPlaybackTimeMs ?? -1) parsedStatus=\(parsedStatus) trackCount=\(trackCount)"
         let telemetryLine = "[VideoPlayer] playback interruption | state: \(stateLabel) | positionSeconds: \(positionSeconds) | durationSeconds: \(durationSeconds) | isPlaying: \(player.isPlaying) | isBuffering: \(isBuffering) | interactiveSeeking: \(isInteractiveSeeking) | lastObservedTimeMs: \(lastObservedPlaybackTimeMs ?? -1) | parsedStatus: \(parsedStatus) | trackCount: \(trackCount) | playerID: \(playerID)"
-        print(line)
+        MediaDiagnostics.playback(line)
         FirebaseSupport.logCrashlytics(telemetryLine)
     }
 
     private func recordPlayerErrorIfNeeded(parsedStatus: String, trackCount: Int) {
         guard !didRecordPlayerError else {
-            print("[VideoPlayer] skipped duplicate player error record | playerID: \(playerID) | file: \(item.name)")
+            MediaDiagnostics.playback("event=duplicate_player_error_ignored mediaID=\(mediaID) playerID=\(playerID)")
             return
         }
         didRecordPlayerError = true
@@ -1501,12 +1612,9 @@ extension VideoPlayerViewModel: VLCMediaDelegate {
 
     func mediaDidFinishParsing(_ aMedia: VLCMedia) {
         let statusLabel = parsedStatusLabel(aMedia.parsedStatus)
-        print("[VideoPlayer] mediaDidFinishParsing: \(statusLabel) | playerID: \(playerID) | file: \(item.name)")
+        MediaDiagnostics.playback("event=vlc_parse_finished mediaID=\(mediaID) playerID=\(playerID) status=\(statusLabel)")
         let tracks = aMedia.tracksInformation
         print("[VideoPlayer] Track count after parse: \(tracks.count) | playerID: \(playerID)")
-        for (i, track) in tracks.enumerated() {
-            print("[VideoPlayer]   track[\(i)] | playerID: \(playerID): \(track)")
-        }
         updateResolution(from: aMedia)
     }
 }
@@ -1518,7 +1626,6 @@ private final class SMBRangeInputStream: InputStream, @unchecked Sendable {
     private let path: String
     private let fileSize: UInt64
     private let ownerID: String
-    private let fileName: String
     private let maxChunkSize = 2 * 1024 * 1024
     private let lock = NSLock()
 
@@ -1526,12 +1633,11 @@ private final class SMBRangeInputStream: InputStream, @unchecked Sendable {
     private var status: Stream.Status = .notOpen
     private var error: Error?
 
-    init(client: SMB2Manager, path: String, fileSize: UInt64, ownerID: String, fileName: String) {
+    init(client: SMB2Manager, path: String, fileSize: UInt64, ownerID: String) {
         self.client = client
         self.path = path
         self.fileSize = fileSize
         self.ownerID = ownerID
-        self.fileName = fileName
         super.init(data: Data())
     }
 
@@ -1559,14 +1665,14 @@ private final class SMBRangeInputStream: InputStream, @unchecked Sendable {
             status = .open
         }
         lock.unlock()
-        print("[SMBRangeInputStream] open | playerID: \(ownerID) | file: \(fileName) | size: \(fileSize)")
+        MediaDiagnostics.resource("event=stream_open playerID=\(ownerID) size=\(fileSize)")
     }
 
     override func close() {
         lock.lock()
         status = .closed
         lock.unlock()
-        print("[SMBRangeInputStream] close | playerID: \(ownerID) | file: \(fileName)")
+        MediaDiagnostics.resource("event=stream_close playerID=\(ownerID)")
     }
 
     override func read(_ buffer: UnsafeMutablePointer<UInt8>, maxLength len: Int) -> Int {
@@ -1612,7 +1718,7 @@ private final class SMBRangeInputStream: InputStream, @unchecked Sendable {
             error = readError
             status = .error
             lock.unlock()
-            print("[SMBRangeInputStream] read error | playerID: \(ownerID) | file: \(fileName) | offset: \(readOffset) | length: \(readLength) | error: \(readError)")
+            MediaDiagnostics.resource("event=stream_read_failed playerID=\(ownerID) offset=\(readOffset) length=\(readLength) \(MediaDiagnostics.errorCode(readError))")
             return -1
         }
     }
@@ -1648,7 +1754,7 @@ private final class SMBRangeInputStream: InputStream, @unchecked Sendable {
             status = .open
         }
         lock.unlock()
-        print("[SMBRangeInputStream] seek | playerID: \(ownerID) | file: \(fileName) | offset: \(requestedOffset)")
+        MediaDiagnostics.resource("event=stream_seek playerID=\(ownerID) offset=\(requestedOffset)")
         return true
     }
 
