@@ -112,6 +112,7 @@ final class SettingsViewModelTests: XCTestCase {
     func test_restoreLatestBackup_callsBackupService() async {
         await sut.restoreLatestBackup()
         XCTAssertTrue(mockBackupService.restoreLatestBackupCalled)
+        XCTAssertTrue(sut.backupStatusMessage?.contains("NASパスワードは復元されません") == true)
     }
 
     func test_restoreBackupFromURL_callsBackupServiceWithSelectedURL() async {

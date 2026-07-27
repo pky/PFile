@@ -9,7 +9,8 @@ final class MockAppDataBackupService: AppDataBackupServiceProtocol {
     var exportedURL: URL = URL(fileURLWithPath: "/tmp/backup.json")
     var restoredResult = AppDataBackupRestoreResult(
         restoredFromURL: URL(fileURLWithPath: "/tmp/backup.json"),
-        preRestoreSnapshotURL: URL(fileURLWithPath: "/tmp/pre-restore.json")
+        preRestoreSnapshotURL: URL(fileURLWithPath: "/tmp/pre-restore.json"),
+        requiresCredentialReentry: true
     )
     var backupDirectoryURL: URL = URL(fileURLWithPath: "/tmp/backups")
     var restoreLatestBackupCalled = false

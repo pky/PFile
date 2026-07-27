@@ -205,7 +205,7 @@ final class SettingsViewModel {
         do {
             let result = try backupService.restoreLatestBackup()
             lastRestoreSnapshotURL = result.preRestoreSnapshotURL
-            backupStatusMessage = "復元しました: \(result.restoredFromURL.lastPathComponent) / 復元前データ: \(result.preRestoreSnapshotURL.lastPathComponent)"
+            backupStatusMessage = restoreStatusMessage(for: result)
             loadBackupMetadata()
             errorMessage = nil
         } catch {
@@ -219,7 +219,7 @@ final class SettingsViewModel {
         do {
             let result = try backupService.restoreBackup(from: url)
             lastRestoreSnapshotURL = result.preRestoreSnapshotURL
-            backupStatusMessage = "復元しました: \(result.restoredFromURL.lastPathComponent) / 復元前データ: \(result.preRestoreSnapshotURL.lastPathComponent)"
+            backupStatusMessage = restoreStatusMessage(for: result)
             loadBackupMetadata()
             errorMessage = nil
         } catch {
@@ -234,6 +234,14 @@ final class SettingsViewModel {
         } else {
             lastAutoBackupDescription = "まだ実行されていません"
         }
+    }
+
+    private func restoreStatusMessage(for result: AppDataBackupRestoreResult) -> String {
+        var message = "復元しました: \(result.restoredFromURL.lastPathComponent) / 復元前データ: \(result.preRestoreSnapshotURL.lastPathComponent)"
+        if result.requiresCredentialReentry {
+            message += " / 安全のためNASパスワードは復元されません。接続先の編集画面で再入力してください。"
+        }
+        return message
     }
 
     private static let backupDateFormatter: DateFormatter = {
