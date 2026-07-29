@@ -25,10 +25,17 @@ struct DirectoryItemTypeTests {
         #expect(DirectoryItem.ItemType.from(fileName: fileName) == .image)
     }
 
+    // MARK: - PDF拡張子
+
+    @Test("PDFは .pdf と判定される")
+    func pdfExtension() {
+        #expect(DirectoryItem.ItemType.from(fileName: "doc.pdf") == .pdf)
+    }
+
     // MARK: - その他拡張子
 
     @Test("非メディアファイルは .other と判定される", arguments: [
-        "doc.pdf", "text.txt", "data.csv", "archive.zip", "code.swift",
+        "text.txt", "data.csv", "archive.zip", "code.swift",
     ])
     func otherExtensions(fileName: String) {
         #expect(DirectoryItem.ItemType.from(fileName: fileName) == .other)
