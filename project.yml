@@ -44,6 +44,7 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: PFileTests
+        type: syncedFolder
     settings:
       base:
         SWIFT_VERSION: "5.10"
@@ -57,6 +58,7 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: PFile
+        type: syncedFolder
         excludes:
           - "Resources/Info.plist"
           - "GoogleService-Info.plist"
