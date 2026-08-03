@@ -55,6 +55,9 @@ struct MediaListsView: View {
                     loadCandidates: { progress in
                         await detailViewModel.generateThumbnailChoices(for: file, progress: progress)
                     },
+                    loadPreview: { position in
+                        await detailViewModel.generateThumbnailPreview(for: file, position: position)
+                    },
                     selectCandidate: { image in
                         detailViewModel.selectThumbnail(image, for: file)
                     }

@@ -9,6 +9,9 @@ enum ThumbnailGenerationPolicy {
     static let maximumConsecutiveChoiceFailures = 2
 
     static let automaticPositions: [Float] = [0.10, 0.20, 0.50]
+    /// 通常地点が黒画面・タイムアウトだった動画だけに使う追加候補。
+    /// 手動候補で取得できる動画を、自動生成でも取りこぼさないためのもの。
+    static let automaticFallbackPositions: [Float] = [0.04, 0.38, 0.56, 0.74, 0.92]
 
     static func shouldIncludeChoice(isBlack: Bool) -> Bool {
         !isBlack
@@ -156,8 +159,15 @@ final class ThumbnailService: ThumbnailServiceProtocol {
         memoryCache.totalCostLimit = 50 * 1024 * 1024
 
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        cacheDir = base.appendingPathComponent("thumbnails")
+        cacheDir = base.appendingPathComponent("thumbnails-v4")
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+
+        // v3以前はパスをキーにしていたため、ファイル移動後に参照不能な画像が残る。
+        // v4ではfileIdを優先するので、旧領域は移行せず一度だけ破棄して再生成する。
+        let legacyCacheDir = base.appendingPathComponent("thumbnails")
+        diskQueue.async {
+            try? FileManager.default.removeItem(at: legacyCacheDir)
+        }
 
         NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
@@ -331,6 +341,39 @@ final class ThumbnailService: ThumbnailServiceProtocol {
             .map(\.image)
     }
 
+    /// ユーザーが指定した動画位置のプレビューを取得する。保存は選択確定時だけ行う。
+    @MainActor
+    func generateVideoThumbnailPreview(
+        for item: DirectoryItem,
+        connection: RemoteConnection,
+        smbClientManager: SMBClientManager,
+        position: Float
+    ) async -> UIImage? {
+        guard !Task.isCancelled,
+              await acquireGenerationPermit() else { return nil }
+        defer { releaseGenerationPermit() }
+
+        let mediaID = MediaDiagnostics.mediaID(
+            sourceID: "remote:\(connection.id.uuidString)",
+            path: item.path
+        )
+        let clampedPosition = min(max(position, 0), 1)
+        return await generateUsingAvailableMedia(
+            for: item,
+            connection: connection,
+            smbClientManager: smbClientManager
+        ) { media in
+            guard let image = await VLCThumbnailFetcher().fetch(
+                media: media,
+                position: clampedPosition,
+                mediaID: mediaID
+            ), !ThumbnailImageAnalyzer.isBlack(image) else {
+                return nil
+            }
+            return image
+        }
+    }
+
     @MainActor
     private func acquireGenerationPermit() async -> Bool {
         let acquired = await generationLimiter.acquire()
@@ -399,15 +442,25 @@ final class ThumbnailService: ThumbnailServiceProtocol {
             smbClientManager: smbClientManager
         ) { media in
             var didReceiveFrame = false
-            for position in ThumbnailGenerationPolicy.automaticPositions {
+            var consecutiveFetchFailures = 0
+            for position in ThumbnailGenerationPolicy.automaticPositions
+                + ThumbnailGenerationPolicy.automaticFallbackPositions {
                 guard let image = await VLCThumbnailFetcher().fetch(
                     media: media,
                     position: position,
                     mediaID: mediaID
                 ) else {
+                    consecutiveFetchFailures += 1
+                    // 到達不能な動画で全候補を9秒ずつ待たないよう、連続失敗は早期終了する。
+                    if ThumbnailGenerationPolicy.shouldStopChoiceSearch(
+                        consecutiveFailures: consecutiveFetchFailures
+                    ) {
+                        break
+                    }
                     continue
                 }
                 didReceiveFrame = true
+                consecutiveFetchFailures = 0
                 guard !ThumbnailImageAnalyzer.isBlack(image) else {
                     MediaDiagnostics.thumbnail(
                         "event=frame_rejected mediaID=\(mediaID) position=\(position) reason=black"
@@ -644,12 +697,23 @@ final class ThumbnailService: ThumbnailServiceProtocol {
 
     // MARK: - キー生成
 
-    static func remoteVideoCacheKey(connectionID: UUID, itemPath: String) -> String {
-        "remote-video-v3|remote:\(connectionID.uuidString)|\(itemPath)"
+    static func remoteVideoCacheKey(
+        connectionID: UUID,
+        itemPath: String,
+        fileId: UInt64? = nil
+    ) -> String {
+        if let fileId, fileId > 0 {
+            return "remote-video-v4|remote:\(connectionID.uuidString)|fileId:\(fileId)"
+        }
+        return "remote-video-v4|remote:\(connectionID.uuidString)|path:\(itemPath)"
     }
 
     func cacheKey(connection: RemoteConnection, item: DirectoryItem) -> String {
-        Self.remoteVideoCacheKey(connectionID: connection.id, itemPath: item.path)
+        Self.remoteVideoCacheKey(
+            connectionID: connection.id,
+            itemPath: item.path,
+            fileId: item.fileId
+        )
     }
 
     // MARK: - Disk Cache
@@ -670,7 +734,7 @@ final class ThumbnailService: ThumbnailServiceProtocol {
 
     private static func isValidStoredThumbnail(_ image: UIImage, key: String) -> Bool {
         ThumbnailImageNormalizer.isCanonical(image)
-            && !(key.hasPrefix("remote-video-v3|") && ThumbnailImageAnalyzer.isBlack(image))
+            && !(key.hasPrefix("remote-video-v4|") && ThumbnailImageAnalyzer.isBlack(image))
     }
 
     private func removeCachedThumbnail(for key: String) {

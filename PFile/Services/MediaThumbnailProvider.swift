@@ -69,7 +69,8 @@ final class MediaThumbnailProvider: MediaThumbnailProviding {
         if case .remote(let connectionID) = source, item.isVideo {
             return ThumbnailService.remoteVideoCacheKey(
                 connectionID: connectionID,
-                itemPath: item.path
+                itemPath: item.path,
+                fileId: item.fileId
             )
         }
         return "\(source.id)|\(item.path)"

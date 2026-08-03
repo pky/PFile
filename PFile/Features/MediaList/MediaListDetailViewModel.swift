@@ -153,6 +153,18 @@ final class MediaListDetailViewModel {
         )
     }
 
+    func generateThumbnailPreview(for file: MediaFile, position: Float) async -> UIImage? {
+        guard let connection = sourceConnection(for: file),
+              let thumbnailService,
+              let smbClientManager else { return nil }
+        return await thumbnailService.generateVideoThumbnailPreview(
+            for: file.toDirectoryItem(),
+            connection: connection,
+            smbClientManager: smbClientManager,
+            position: position
+        )
+    }
+
     func selectThumbnail(_ image: UIImage, for file: MediaFile) {
         let key = cacheKey(for: file)
         thumbnails[key] = thumbnailService?.store(image, for: key) ?? image
@@ -174,6 +186,8 @@ final class MediaListDetailViewModel {
 #endif
     }
 
+    /// 再生開始前に、リスト内で移動済みの動画をfileIdからまとめて復元する。
+    /// スライド遷移で次の動画だけ古いパスのまま残らないようにする。
     func resolvePlayableFile(_ file: MediaFile, smbClientManager: SMBClientManager) async -> MediaFile {
         guard let connection = sourceConnection(for: file),
               connection.serviceType == .smb else {
@@ -182,20 +196,30 @@ final class MediaListDetailViewModel {
 
         do {
             let repo = try SMBFileRepository(connection: connection, clientManager: smbClientManager)
-            if try await repo.fileExists(at: file.path) {
-                return file
+            let candidates = files.filter {
+                $0.sourceID == file.sourceID && ($0.fileId ?? 0) > 0
+            }
+            var missingFileIDs = Set<UInt64>()
+            for candidate in candidates {
+                let exists = try await repo.fileExists(at: candidate.path)
+                if !exists, let fileId = candidate.fileId {
+                    missingFileIDs.insert(fileId)
+                }
             }
 
-            guard let fileId = file.fileId, fileId > 0,
-                  let resolvedItem = try await repo.findMediaItemRecursively(
-                    at: connection.startPath,
-                    matchingFileId: fileId
-                  ) else {
-                return file
-            }
+            guard !missingFileIDs.isEmpty else { return file }
+            let resolvedItems = try await repo.findMediaItemsRecursively(
+                at: connection.startPath,
+                matchingFileIDs: missingFileIDs
+            )
+            guard !resolvedItems.isEmpty else { return file }
 
-            try await repository.addItems([resolvedItem], sourceID: file.sourceID, to: list)
-            refreshFiles(reason: "path_resolved")
+            try await repository.addItems(
+                Array(resolvedItems.values),
+                sourceID: file.sourceID,
+                to: list
+            )
+            refreshFiles(reason: "paths_resolved")
             errorMessage = nil
             return list.items.first(where: { $0.id == file.id }) ?? file
         } catch {

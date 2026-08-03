@@ -207,6 +207,9 @@ private struct DirectoryContentView: View {
                     loadCandidates: { progress in
                         await viewModel.generateThumbnailChoices(for: item, progress: progress)
                     },
+                    loadPreview: { position in
+                        await viewModel.generateThumbnailPreview(for: item, position: position)
+                    },
                     selectCandidate: { image in
                         viewModel.selectThumbnail(image, for: item)
                     }
@@ -593,56 +596,105 @@ struct ThumbnailChoiceView: View {
     @Environment(\.dismiss) private var dismiss
     let item: DirectoryItem
     let loadCandidates: (@escaping ThumbnailChoiceProgressHandler) async -> [UIImage]
+    let loadPreview: (Float) async -> UIImage?
     let selectCandidate: (UIImage) -> Void
 
     @State private var candidates: [UIImage] = []
-    @State private var isLoading = true
+    @State private var preview: UIImage?
+    @State private var position = 0.5
+    @State private var isLoadingPreview = true
+    @State private var isLoadingCandidates = false
     @State private var generatedCandidateCount = 0
     @State private var maximumCandidateCount = ThumbnailGenerationPolicy.maximumChoiceCount
+    @State private var previewTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
-            Group {
-                if isLoading {
-                    VStack(spacing: 12) {
-                        ProgressView(
-                            value: Double(generatedCandidateCount),
-                            total: Double(max(maximumCandidateCount, 1))
-                        )
-                        .frame(maxWidth: 240)
-                        Text("候補を生成中… \(generatedCandidateCount)/\(maximumCandidateCount)")
-                            .font(.subheadline)
+            ScrollView {
+                VStack(spacing: 20) {
+                    ZStack {
+                        Color.black
+                        if let preview {
+                            Image(uiImage: preview)
+                                .resizable()
+                                .scaledToFit()
+                        } else if isLoadingPreview {
+                            ProgressView().tint(.white)
+                        } else {
+                            ContentUnavailableView(
+                                "この位置のフレームを取得できません",
+                                systemImage: "photo.badge.exclamationmark",
+                                description: Text("位置を少し変えて再試行してください")
+                            )
+                            .foregroundStyle(.white)
+                        }
+                    }
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("選択位置")
+                            Spacer()
+                            Text("\(Int(position * 100))%")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $position, in: 0...1)
+                            .onChange(of: position) { _, _ in
+                                schedulePreviewLoad()
+                            }
+                        Text("スライダーを止めると、その位置のフレームを読み込みます")
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                } else if candidates.isEmpty {
-                    ContentUnavailableView(
-                        "候補を生成できませんでした",
-                        systemImage: "photo.badge.exclamationmark",
-                        description: Text("動画を読み込めないか、取得したフレームがすべて黒画像でした")
-                    )
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 12) {
-                            ForEach(Array(candidates.enumerated()), id: \.offset) { _, image in
-                                Button {
-                                    selectCandidate(image)
-                                    dismiss()
-                                } label: {
-                                    Image(uiImage: image)
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(height: 100)
-                                        .frame(maxWidth: .infinity)
-                                        .clipped()
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    Button("このフレームを使用") {
+                        guard let preview else { return }
+                        selectCandidate(preview)
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(preview == nil || isLoadingPreview)
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("自動候補")
+                            .font(.headline)
+                        if isLoadingCandidates {
+                            ProgressView(
+                                value: Double(generatedCandidateCount),
+                                total: Double(max(maximumCandidateCount, 1))
+                            )
+                            Text("候補を生成中… \(generatedCandidateCount)/\(maximumCandidateCount)")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        } else if candidates.isEmpty {
+                            Button("自動候補を表示") { loadAutomaticCandidates() }
+                        } else {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 12) {
+                                ForEach(Array(candidates.enumerated()), id: \.offset) { _, image in
+                                    Button {
+                                        selectCandidate(image)
+                                        dismiss()
+                                    } label: {
+                                        Image(uiImage: image)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .frame(height: 100)
+                                            .frame(maxWidth: .infinity)
+                                            .clipped()
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
-                        .padding()
                     }
                 }
             }
+            .padding()
             .navigationTitle("サムネイルを選択")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -651,12 +703,42 @@ struct ThumbnailChoiceView: View {
                 }
             }
             .task {
-                candidates = await loadCandidates { candidateCount, maximumCount in
+                await loadPreview(at: position)
+            }
+            .onDisappear {
+                previewTask?.cancel()
+            }
+        }
+    }
+
+    private func schedulePreviewLoad() {
+        previewTask?.cancel()
+        let requestedPosition = position
+        previewTask = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+            } catch {
+                return
+            }
+            await loadPreview(at: requestedPosition)
+        }
+    }
+
+    @MainActor
+    private func loadPreview(at position: Double) async {
+        isLoadingPreview = true
+        preview = await loadPreview(Float(position))
+        isLoadingPreview = false
+    }
+
+    private func loadAutomaticCandidates() {
+        isLoadingCandidates = true
+        Task {
+            candidates = await loadCandidates { candidateCount, maximumCount in
                     generatedCandidateCount = candidateCount
                     maximumCandidateCount = maximumCount
                 }
-                isLoading = false
-            }
+            isLoadingCandidates = false
         }
     }
 }

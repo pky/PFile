@@ -37,24 +37,37 @@ extension FileRepository {
     }
 
     func findMediaItemRecursively(at rootPath: String, matchingFileId fileId: UInt64) async throws -> DirectoryItem? {
-        var visitedPaths = Set<String>()
+        try await findMediaItemsRecursively(at: rootPath, matchingFileIDs: [fileId])[fileId]
+    }
 
-        func visit(path: String) async throws -> DirectoryItem? {
-            guard visitedPaths.insert(path).inserted else { return nil }
+    /// 同じリスト内で移動済みの複数メディアを、一度の走査で探す。
+    func findMediaItemsRecursively(
+        at rootPath: String,
+        matchingFileIDs fileIDs: Set<UInt64>
+    ) async throws -> [UInt64: DirectoryItem] {
+        guard !fileIDs.isEmpty else { return [:] }
+        var visitedPaths = Set<String>()
+        var found: [UInt64: DirectoryItem] = [:]
+
+        func visit(path: String) async throws {
+            guard found.count < fileIDs.count,
+                  visitedPaths.insert(path).inserted else { return }
 
             let children = try await listDirectory(at: path)
             for child in children {
-                if child.isMedia, child.fileId == fileId {
-                    return child
+                if child.isMedia,
+                   let fileId = child.fileId,
+                   fileIDs.contains(fileId) {
+                    found[fileId] = child
                 }
-                if child.isDirectory, let found = try await visit(path: child.path) {
-                    return found
+                if child.isDirectory {
+                    try await visit(path: child.path)
                 }
             }
-            return nil
         }
 
-        return try await visit(path: rootPath)
+        try await visit(path: rootPath)
+        return found
     }
 
     func comicImageItemsIfEligible(in folder: DirectoryItem) async throws -> [DirectoryItem]? {

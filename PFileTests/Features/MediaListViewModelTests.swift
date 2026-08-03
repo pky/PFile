@@ -3,6 +3,27 @@ import Foundation
 import Testing
 import UIKit
 
+private final class RecursiveLookupFileRepository: FileRepository {
+    let childrenByPath: [String: [DirectoryItem]]
+
+    init(childrenByPath: [String: [DirectoryItem]]) {
+        self.childrenByPath = childrenByPath
+    }
+
+    func listDirectory(at path: String) async throws -> [DirectoryItem] {
+        childrenByPath[path] ?? []
+    }
+
+    func fileExists(at path: String) async throws -> Bool { false }
+    func download(from remotePath: String, to localURL: URL, progress: ((Double) -> Void)?) async throws {}
+    func upload(from localURL: URL, to remotePath: String, progress: ((Double) -> Void)?) async throws {}
+    func createDirectory(at path: String) async throws {}
+    func delete(at path: String) async throws {}
+    func move(from sourcePath: String, to destinationPath: String) async throws {}
+    func copy(from sourcePath: String, to destinationPath: String) async throws {}
+    func rename(at path: String, to newName: String) async throws {}
+}
+
 @MainActor
 struct MediaListViewModelTests {
 
@@ -332,6 +353,47 @@ struct MediaListViewModelTests {
         #expect(list.items.count == 1)
         #expect(list.items.first?.path == "/new/movie.mp4")
         #expect(list.items.first?.id == original.id)
+    }
+
+    @Test("移動済み動画は複数fileIdを一度のツリー走査で復元できる")
+    func recursiveLookup_findsAllMovedItems() async throws {
+        let folder = DirectoryItem(
+            name: "moved",
+            path: "/moved",
+            itemType: .directory,
+            size: nil,
+            modifiedAt: nil,
+            createdAt: nil
+        )
+        let first = DirectoryItem(
+            name: "first.mp4",
+            path: "/moved/first.mp4",
+            itemType: .video,
+            size: nil,
+            modifiedAt: nil,
+            createdAt: nil,
+            fileId: 101
+        )
+        let second = DirectoryItem(
+            name: "second.mp4",
+            path: "/moved/second.mp4",
+            itemType: .video,
+            size: nil,
+            modifiedAt: nil,
+            createdAt: nil,
+            fileId: 202
+        )
+        let repository = RecursiveLookupFileRepository(
+            childrenByPath: ["/": [folder], "/moved": [first, second]]
+        )
+
+        let found = try await repository.findMediaItemsRecursively(
+            at: "/",
+            matchingFileIDs: [101, 202]
+        )
+
+        #expect(found[101]?.path == first.path)
+        #expect(found[202]?.path == second.path)
     }
 
     // MARK: - AddToListViewModel

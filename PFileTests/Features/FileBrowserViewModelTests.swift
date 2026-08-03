@@ -6,6 +6,14 @@ import UIKit
 @MainActor
 struct FileBrowserViewModelTests {
 
+    @Test("自動サムネイル再試行は3回で打ち切る")
+    func automaticThumbnailRetryPolicy_limitsRetryCount() {
+        #expect(AutomaticThumbnailRetryPolicy.delay(forAttempt: 0) != nil)
+        #expect(AutomaticThumbnailRetryPolicy.delay(forAttempt: 1) != nil)
+        #expect(AutomaticThumbnailRetryPolicy.delay(forAttempt: 2) != nil)
+        #expect(AutomaticThumbnailRetryPolicy.delay(forAttempt: 3) == nil)
+    }
+
     private func makeViewModel(items: [DirectoryItem] = []) -> (FileBrowserViewModel, MockFileRepository) {
         let repo = MockFileRepository()
         repo.items = items
@@ -268,6 +276,41 @@ struct FileBrowserViewModelTests {
         #expect(
             provider.cacheKey(source: .remote(connection.id), item: item)
                 == service.cacheKey(connection: connection, item: item)
+        )
+    }
+
+    @Test("SMB動画のサムネイルキーはfileIdが同じなら移動後も変わらない")
+    func remoteVideoCacheKey_keepsFileIdAcrossMove() {
+        let connection = ModelFactory.makeConnection()
+        let original = DirectoryItem(
+            name: "movie.mp4",
+            path: "/old/movie.mp4",
+            itemType: .video,
+            size: nil,
+            modifiedAt: nil,
+            createdAt: nil,
+            fileId: 42
+        )
+        let moved = DirectoryItem(
+            name: "movie.mp4",
+            path: "/other/depth/movie.mp4",
+            itemType: .video,
+            size: nil,
+            modifiedAt: nil,
+            createdAt: nil,
+            fileId: 42
+        )
+
+        #expect(
+            ThumbnailService.remoteVideoCacheKey(
+                connectionID: connection.id,
+                itemPath: original.path,
+                fileId: original.fileId
+            ) == ThumbnailService.remoteVideoCacheKey(
+                connectionID: connection.id,
+                itemPath: moved.path,
+                fileId: moved.fileId
+            )
         )
     }
 

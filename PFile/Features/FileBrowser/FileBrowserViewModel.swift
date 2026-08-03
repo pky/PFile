@@ -1,6 +1,15 @@
 import Foundation
 import UIKit
 
+enum AutomaticThumbnailRetryPolicy {
+    static let delays: [Duration] = [.seconds(3), .seconds(10), .seconds(30)]
+
+    static func delay(forAttempt attempt: Int) -> Duration? {
+        guard delays.indices.contains(attempt) else { return nil }
+        return delays[attempt]
+    }
+}
+
 @Observable
 @MainActor
 final class FileBrowserViewModel {
@@ -53,6 +62,8 @@ final class FileBrowserViewModel {
     private let mediaListRepository: (any MediaListRepository)?
     private let reconnectHandler: (() -> Void)?
     private var warmUpTask: Task<Void, Never>?
+    private var thumbnailRetryTasks: [String: Task<Void, Never>] = [:]
+    private var thumbnailRetryAttempts: [String: Int] = [:]
     private var thumbnailCacheObserver: ThumbnailCacheClearObserver?
     private var isNetworkWorkSuspended = false
 
@@ -159,6 +170,8 @@ final class FileBrowserViewModel {
         isNetworkWorkSuspended = true
         warmUpTask?.cancel()
         warmUpTask = nil
+        thumbnailRetryTasks.values.forEach { $0.cancel() }
+        thumbnailRetryTasks.removeAll()
         reconnectHandler?()
     }
 
@@ -193,6 +206,7 @@ final class FileBrowserViewModel {
         if let mediaThumbnailProvider,
            let cached = mediaThumbnailProvider.thumbnail(for: .remote(connection.id), item: item) {
             thumbnails[key] = cached
+            clearThumbnailRetry(for: key)
             return
         }
 
@@ -202,15 +216,19 @@ final class FileBrowserViewModel {
            let image = await mediaThumbnailProvider.loadThumbnail(
             for: .remote(connection.id),
             item: item,
-            connection: connection
+           connection: connection
            ) {
             guard !Task.isCancelled, !isNetworkWorkSuspended else { return }
             thumbnails[key] = image
+            clearThumbnailRetry(for: key)
             return
         }
 
         // Provider が存在する場合は同じ ThumbnailService を再度呼ばない。
-        if mediaThumbnailProvider != nil { return }
+        if mediaThumbnailProvider != nil {
+            scheduleThumbnailRetry(for: item, key: key)
+            return
+        }
 
         guard item.isVideo,
               let thumbnailService,
@@ -228,6 +246,9 @@ final class FileBrowserViewModel {
         ) {
             guard !Task.isCancelled, !isNetworkWorkSuspended else { return }
             thumbnails[key] = image
+            clearThumbnailRetry(for: key)
+        } else {
+            scheduleThumbnailRetry(for: item, key: key)
         }
     }
 
@@ -248,10 +269,48 @@ final class FileBrowserViewModel {
         )
     }
 
+    func generateThumbnailPreview(for item: DirectoryItem, position: Float) async -> UIImage? {
+        guard item.isVideo,
+              !isNetworkWorkSuspended,
+              let thumbnailService,
+              let smbClientManager else { return nil }
+        return await thumbnailService.generateVideoThumbnailPreview(
+            for: item,
+            connection: connection,
+            smbClientManager: smbClientManager,
+            position: position
+        )
+    }
+
     /// 選択した画像を共有キャッシュと現在の表示へ反映する。
     func selectThumbnail(_ image: UIImage, for item: DirectoryItem) {
         let key = cacheKey(for: item)
         thumbnails[key] = thumbnailService?.store(image, for: key) ?? image
+        clearThumbnailRetry(for: key)
+    }
+
+    private func scheduleThumbnailRetry(for item: DirectoryItem, key: String) {
+        guard !isNetworkWorkSuspended,
+              thumbnailRetryTasks[key] == nil else { return }
+        let attempt = thumbnailRetryAttempts[key, default: 0]
+        guard let delay = AutomaticThumbnailRetryPolicy.delay(forAttempt: attempt) else { return }
+        thumbnailRetryAttempts[key] = attempt + 1
+        thumbnailRetryTasks[key] = Task { [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.thumbnailRetryTasks.removeValue(forKey: key)
+            await self.loadThumbnail(for: item)
+        }
+    }
+
+    private func clearThumbnailRetry(for key: String) {
+        thumbnailRetryTasks[key]?.cancel()
+        thumbnailRetryTasks.removeValue(forKey: key)
+        thumbnailRetryAttempts.removeValue(forKey: key)
     }
 
     private func startVideoFileWarmUp() {

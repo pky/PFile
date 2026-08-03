@@ -9,6 +9,11 @@ struct ThumbnailGenerationPolicyTests {
         #expect(ThumbnailGenerationPolicy.automaticPositions == [0.10, 0.20, 0.50])
     }
 
+    @Test("通常地点で取れない動画は手動候補の追加地点を自動でも試す")
+    func automaticGenerationUsesFallbackPositions() {
+        #expect(ThumbnailGenerationPolicy.automaticFallbackPositions == [0.04, 0.38, 0.56, 0.74, 0.92])
+    }
+
     @Test("手動候補は通常生成より広い時間帯を使う")
     func manualChoicesCoverVideoTimeline() {
         #expect(ThumbnailGenerationPolicy.choicePositions.count == 6)
