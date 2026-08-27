@@ -615,7 +615,7 @@ struct MediaVideoScreen<Renderer: View>: View {
     @State private var scrubPositionSeconds: Double = 0
     @State private var committedSeekPositionSeconds: Double?
     @State private var slideOffsetX: CGFloat = 0
-    @State private var orientationMode = OrientationService.shared.mode
+    @State private var orientationMode = OrientationService.shared.videoMode
     @AppStorage(VideoPlayerHomeButtonSettings.key) private var showHomeButtonAlways = VideoPlayerHomeButtonSettings.defaultValue
     @AppStorage(VideoPlayerShareButtonSettings.key) private var showShareButton = VideoPlayerShareButtonSettings.defaultValue
     @AppStorage(VideoPlayerAirPlayButtonSettings.key) private var showAirPlayButton = VideoPlayerAirPlayButtonSettings.defaultValue
@@ -822,7 +822,7 @@ struct MediaVideoScreen<Renderer: View>: View {
                     }
             )
             .onAppear {
-                orientationMode = OrientationService.shared.mode
+                orientationMode = OrientationService.shared.videoMode
                 if isPlaying {
                     resetHideTimer()
                 }
@@ -920,7 +920,7 @@ struct MediaVideoScreen<Renderer: View>: View {
             nextMode = .portrait
         }
         orientationMode = nextMode
-        OrientationService.shared.setMode(nextMode)
+        OrientationService.shared.setVideoMode(nextMode)
     }
 
     private func formatTime(_ seconds: Double) -> String {

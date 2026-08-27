@@ -250,9 +250,18 @@ struct SettingsView: View {
                 set: { viewModel.showVideoClock = $0 }
             ))
 
-            Picker("画面の向き", selection: Binding(
-                get: { viewModel.orientationMode },
-                set: { viewModel.orientationMode = $0 }
+            Picker("書類の画面の向き", selection: Binding(
+                get: { viewModel.documentOrientationMode },
+                set: { viewModel.documentOrientationMode = $0 }
+            )) {
+                ForEach(OrientationMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+
+            Picker("動画の画面の向き", selection: Binding(
+                get: { viewModel.videoOrientationMode },
+                set: { viewModel.videoOrientationMode = $0 }
             )) {
                 ForEach(OrientationMode.allCases, id: \.self) { mode in
                     Text(mode.displayName).tag(mode)

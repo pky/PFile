@@ -71,6 +71,7 @@ final class MediaListRepositoryImpl: MediaListRepository {
                 if existing.name != item.name { existing.name = item.name }
                 if existing.fileId == nil, let fid = item.fileId { existing.fileId = fid }
                 if let size = item.size { existing.fileSize = size }
+                if let createdAt = item.createdAt { existing.sourceCreatedAt = createdAt }
                 file = existing
             } else {
                 file = MediaFile(
@@ -80,7 +81,8 @@ final class MediaListRepositoryImpl: MediaListRepository {
                     name: item.name,
                     itemTypeRaw: item.isVideo ? "video" : "image",
                     fileId: item.fileId,
-                    fileSize: item.size
+                    fileSize: item.size,
+                    sourceCreatedAt: item.createdAt
                 )
                 context.insert(file)
             }

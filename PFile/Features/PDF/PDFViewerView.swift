@@ -86,6 +86,7 @@ private struct PDFViewerScreen: View {
     @State private var currentPageIndex = 0
     @State private var pageCount = 0
     @State private var targetPageIndex: Int?
+    @State private var textSizePercentage = 100
 
     var body: some View {
         ZStack {
@@ -99,7 +100,8 @@ private struct PDFViewerScreen: View {
                         readingDirection: readingDirection,
                         currentPageIndex: $currentPageIndex,
                         pageCount: $pageCount,
-                        targetPageIndex: $targetPageIndex
+                        targetPageIndex: $targetPageIndex,
+                        textSizePercentage: $textSizePercentage
                     )
                     .background(Color.white)
                 } else if isLoading {
@@ -126,6 +128,10 @@ private struct PDFViewerScreen: View {
                                 PDFThumbnailStripView(pdfBridge: pdfBridge)
                                     .frame(height: 56)
                             }
+
+                            PDFTextSizeControl(
+                                percentage: $textSizePercentage
+                            )
 
                             HStack {
                                 Text("PDF")
@@ -176,6 +182,58 @@ private final class PDFViewBridge: ObservableObject {
     @Published var pdfView: PDFView?
 }
 
+private struct PDFTextSizeControl: View {
+    @Binding var percentage: Int
+
+    private let minimumPercentage = 50
+    private let maximumPercentage = 300
+    private let step = 25
+
+    var body: some View {
+        HStack(spacing: 28) {
+            textSizeButton(
+                systemImage: "textformat.size.smaller",
+                isEnabled: percentage > minimumPercentage
+            ) {
+                percentage = max(minimumPercentage, percentage - step)
+            }
+
+            Button {
+                percentage = 100
+            } label: {
+                Text("文字サイズ \(percentage)%")
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 96, minHeight: 44)
+            }
+            .disabled(percentage == 100)
+
+            textSizeButton(
+                systemImage: "textformat.size.larger",
+                isEnabled: percentage < maximumPercentage
+            ) {
+                percentage = min(maximumPercentage, percentage + step)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func textSizeButton(
+        systemImage: String,
+        isEnabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 22))
+                .foregroundStyle(isEnabled ? .white : .white.opacity(0.3))
+                .frame(width: 44, height: 44)
+        }
+        .disabled(!isEnabled)
+    }
+}
+
 private struct PDFThumbnailStripView: UIViewRepresentable {
     @ObservedObject var pdfBridge: PDFViewBridge
 
@@ -200,12 +258,14 @@ private struct PDFDocumentView: UIViewRepresentable {
     @Binding var currentPageIndex: Int
     @Binding var pageCount: Int
     @Binding var targetPageIndex: Int?
+    @Binding var textSizePercentage: Int
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             currentPageIndex: $currentPageIndex,
             pageCount: $pageCount,
-            targetPageIndex: $targetPageIndex
+            targetPageIndex: $targetPageIndex,
+            textSizePercentage: $textSizePercentage
         )
     }
 
@@ -231,26 +291,31 @@ private struct PDFDocumentView: UIViewRepresentable {
         context.coordinator.applyReadingDirection(readingDirection, to: pdfView)
         context.coordinator.loadDocumentIfNeeded(from: documentURL)
         context.coordinator.moveToRequestedPageIfNeeded()
+        context.coordinator.applyTextSizeIfNeeded()
     }
 
     final class Coordinator: NSObject {
         @Binding private var currentPageIndex: Int
         @Binding private var pageCount: Int
         @Binding private var targetPageIndex: Int?
+        @Binding private var textSizePercentage: Int
 
         weak var pdfView: PDFView?
         private var observedDocumentURL: URL?
         private var notificationToken: NSObjectProtocol?
         private var appliedReadingDirection: ReadingDirection?
+        private var appliedTextSizePercentage: Int?
 
         init(
             currentPageIndex: Binding<Int>,
             pageCount: Binding<Int>,
-            targetPageIndex: Binding<Int?>
+            targetPageIndex: Binding<Int?>,
+            textSizePercentage: Binding<Int>
         ) {
             self._currentPageIndex = currentPageIndex
             self._pageCount = pageCount
             self._targetPageIndex = targetPageIndex
+            self._textSizePercentage = textSizePercentage
         }
 
         deinit {
@@ -265,6 +330,7 @@ private struct PDFDocumentView: UIViewRepresentable {
             pdfView?.document = PDFDocument(url: url)
             pageCount = pdfView?.document?.pageCount ?? 0
             currentPageIndex = 0
+            appliedTextSizePercentage = nil
             observePageChanges()
         }
 
@@ -286,6 +352,30 @@ private struct PDFDocumentView: UIViewRepresentable {
             self.targetPageIndex = nil
         }
 
+        func applyTextSizeIfNeeded(force: Bool = false) {
+            guard force || appliedTextSizePercentage != textSizePercentage,
+                  let pdfView else { return }
+
+            if textSizePercentage == 100 {
+                pdfView.autoScales = true
+                appliedTextSizePercentage = textSizePercentage
+                return
+            }
+
+            let fitScaleFactor = pdfView.scaleFactorForSizeToFit
+            guard fitScaleFactor > 0 else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.applyTextSizeIfNeeded(force: true)
+                }
+                return
+            }
+
+            pdfView.minScaleFactor = fitScaleFactor * 0.5
+            pdfView.maxScaleFactor = fitScaleFactor * 3
+            pdfView.scaleFactor = fitScaleFactor * CGFloat(textSizePercentage) / 100
+            appliedTextSizePercentage = textSizePercentage
+        }
+
         private func observePageChanges() {
             if let notificationToken {
                 NotificationCenter.default.removeObserver(notificationToken)
@@ -301,6 +391,7 @@ private struct PDFDocumentView: UIViewRepresentable {
                       let page = pdfView.currentPage else { return }
                 self.pageCount = document.pageCount
                 self.currentPageIndex = document.index(for: page)
+                self.applyTextSizeIfNeeded(force: self.textSizePercentage != 100)
             }
         }
     }

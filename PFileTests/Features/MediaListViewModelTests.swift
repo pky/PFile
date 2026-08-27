@@ -182,6 +182,34 @@ struct MediaListViewModelTests {
         #expect(vm.files.map(\.name) == ["new.mp4", "old.mp4"])
     }
 
+    @Test("detail は元ファイル日時で並び替えできる")
+    func detail_sortBySourceCreatedAtDescending_success() async {
+        let list = MediaList(name: "テスト", sortOrder: 0)
+        let oldDate = Date(timeIntervalSince1970: 100)
+        let newDate = Date(timeIntervalSince1970: 200)
+        let oldFile = MediaFile(
+            connectionId: UUID(),
+            path: "/old.mp4",
+            name: "old.mp4",
+            itemTypeRaw: "video",
+            sourceCreatedAt: oldDate
+        )
+        let newFile = MediaFile(
+            connectionId: UUID(),
+            path: "/new.mp4",
+            name: "new.mp4",
+            itemTypeRaw: "video",
+            sourceCreatedAt: newDate
+        )
+        list.items = [oldFile, newFile]
+        let (vm, _) = makeDetailViewModel(list: list)
+
+        vm.sortKey = .sourceCreatedAt
+        vm.sortOrder = .descending
+
+        #expect(vm.files.map(\.name) == ["new.mp4", "old.mp4"])
+    }
+
     @Test("removeFile でファイルをリストから削除できる")
     func detail_removeFile_success() async {
         let list = MediaList(name: "テスト", sortOrder: 0)
@@ -506,6 +534,28 @@ struct MediaListViewModelTests {
         #expect(list.items.contains { $0.path == "/a.mp4" })
         #expect(list.items.contains { $0.path == "/b.mp4" })
         #expect(vm.canSave == false)
+    }
+
+    @Test("リスト登録時に元ファイル日時を保持する")
+    func addToList_preservesSourceCreatedAt() async throws {
+        let repo = MockMediaListRepository()
+        let connection = ModelFactory.makeConnection()
+        let sourceID = ContentSource.remote(connection.id).id
+        let list = MediaList(name: "お気に入り", scopeID: sourceID, sortOrder: 0)
+        let createdAt = Date(timeIntervalSince1970: 123_456)
+        let item = DirectoryItem(
+            name: "a.mp4",
+            path: "/a.mp4",
+            itemType: .video,
+            size: 123,
+            modifiedAt: nil,
+            createdAt: createdAt
+        )
+
+        try await repo.addItems([item], sourceID: sourceID, to: list)
+
+        #expect(list.items.first?.sourceCreatedAt == createdAt)
+        #expect(list.items.first?.fileSize == 123)
     }
 
     // MARK: - TabOrderService

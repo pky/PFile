@@ -338,5 +338,19 @@ struct MediaViewerContainerView: View {
                 }
             }
         }
+        .onAppear {
+            if route.initialItem.isPDF {
+                OrientationService.shared.activate(.document)
+            } else if route.initialItem.isVideo {
+                OrientationService.shared.activate(.video)
+            }
+        }
+        .onDisappear {
+            if route.initialItem.isPDF {
+                OrientationService.shared.deactivate(.document)
+            } else if route.initialItem.isVideo {
+                OrientationService.shared.deactivate(.video)
+            }
+        }
     }
 }

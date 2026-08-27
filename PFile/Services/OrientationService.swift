@@ -24,29 +24,81 @@ enum OrientationMode: String, CaseIterable {
     }
 }
 
+enum OrientationContent {
+    case document
+    case video
+}
+
 // MARK: - OrientationService
 
 final class OrientationService {
 
     static let shared = OrientationService()
 
-    private static let key = "Settings.orientationMode"
+    private static let legacyKey = "Settings.orientationMode"
+    private static let documentKey = "Settings.documentOrientationMode"
+    private static let videoKey = "Settings.videoOrientationMode"
 
-    private(set) var mode: OrientationMode = .system {
+    private(set) var documentMode: OrientationMode = .system {
         didSet {
-            UserDefaults.standard.set(mode.rawValue, forKey: Self.key)
+            UserDefaults.standard.set(documentMode.rawValue, forKey: Self.documentKey)
         }
+    }
+
+    private(set) var videoMode: OrientationMode = .system {
+        didSet {
+            UserDefaults.standard.set(videoMode.rawValue, forKey: Self.videoKey)
+        }
+    }
+
+    private var activeContent: OrientationContent?
+
+    var mode: OrientationMode {
+        mode(for: activeContent)
     }
 
     private init() {
-        if let raw = UserDefaults.standard.string(forKey: Self.key),
-           let saved = OrientationMode(rawValue: raw) {
-            mode = saved
+        let legacyMode = UserDefaults.standard.string(forKey: Self.legacyKey)
+            .flatMap(OrientationMode.init(rawValue:)) ?? .system
+        documentMode = UserDefaults.standard.string(forKey: Self.documentKey)
+            .flatMap(OrientationMode.init(rawValue:)) ?? legacyMode
+        videoMode = UserDefaults.standard.string(forKey: Self.videoKey)
+            .flatMap(OrientationMode.init(rawValue:)) ?? legacyMode
+    }
+
+    func setDocumentMode(_ newMode: OrientationMode) {
+        documentMode = newMode
+        applyOrientationAfterViewUpdate()
+    }
+
+    func setVideoMode(_ newMode: OrientationMode) {
+        videoMode = newMode
+        applyOrientationAfterViewUpdate()
+    }
+
+    func activate(_ content: OrientationContent) {
+        activeContent = content
+        applyOrientationAfterViewUpdate()
+    }
+
+    func deactivate(_ content: OrientationContent) {
+        guard activeContent == content else { return }
+        activeContent = nil
+        applyOrientationAfterViewUpdate()
+    }
+
+    private func mode(for content: OrientationContent?) -> OrientationMode {
+        switch content {
+        case .document:
+            return documentMode
+        case .video:
+            return videoMode
+        case nil:
+            return .system
         }
     }
 
-    func setMode(_ newMode: OrientationMode) {
-        mode = newMode
+    private func applyOrientationAfterViewUpdate() {
         // SwiftUI の更新サイクルが完了してから UIKit に適用する
         DispatchQueue.main.async { self.applyOrientation() }
     }

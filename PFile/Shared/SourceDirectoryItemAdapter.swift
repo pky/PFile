@@ -45,9 +45,9 @@ enum SourceDirectoryItemAdapter {
             name: file.name,
             path: file.path,
             itemType: itemType,
-            size: nil,
+            size: file.fileSize,
             modifiedAt: nil,
-            createdAt: nil,
+            createdAt: file.sourceCreatedAt,
             fileId: file.fileId
         )
     }

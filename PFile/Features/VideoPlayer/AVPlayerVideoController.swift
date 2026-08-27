@@ -171,6 +171,8 @@ final class AVPlayerVideoController: @unchecked Sendable {
     func seek(toSeconds seconds: Double) {
         let target = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         let tolerance = CMTime(seconds: 1, preferredTimescale: 600)
+        // 連続タップ時に古い seek が残ると、古い Range 読み出しが最新位置を待たせる。
+        playerItem?.cancelPendingSeeks()
         player.seek(to: target, toleranceBefore: tolerance, toleranceAfter: tolerance)
     }
 

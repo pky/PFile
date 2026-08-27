@@ -31,6 +31,8 @@ final class MediaFile {
     var name: String
     var itemTypeRaw: String
     var addedAt: Date
+    /// リスト登録日時とは別に、ブラウザで取得した元ファイルの作成日時を保持する。
+    var sourceCreatedAt: Date?
     var fileSize: Int64?
     /// SMBサーバーの inode 番号。同一FS内でのファイル移動後も変わらない（サーバー依存）
     var fileId: UInt64?
@@ -46,7 +48,8 @@ final class MediaFile {
         itemTypeRaw: String,
         fileId: UInt64? = nil,
         fileSize: Int64? = nil,
-        addedAt: Date = Date()
+        addedAt: Date = Date(),
+        sourceCreatedAt: Date? = nil
     ) {
         self.id = id
         self.connectionId = connectionId
@@ -57,5 +60,6 @@ final class MediaFile {
         self.fileId = fileId
         self.fileSize = fileSize
         self.addedAt = addedAt
+        self.sourceCreatedAt = sourceCreatedAt
     }
 }

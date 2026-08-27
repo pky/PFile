@@ -100,6 +100,9 @@ struct MediaListDetailView: View {
         .onChange(of: viewModel?.sortOrder) { _, _ in
             viewModel?.applySortChange()
         }
+        .onChange(of: viewModel?.dateDisplayMode) { _, _ in
+            viewModel?.applySortChange()
+        }
     }
 
     // MARK: - Toolbar
@@ -161,6 +164,11 @@ struct MediaListDetailView: View {
                         Text(order.displayName).tag(order)
                     }
                 }
+                Picker("表示する日付", selection: $detailViewModel.dateDisplayMode) {
+                    ForEach(MediaListDateDisplayMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
                 if !prefs.viewMode.isListMode {
                     Divider()
                     Section("グリッドサイズ") {
@@ -206,7 +214,8 @@ struct MediaListDetailView: View {
                         MediaFileRowView(
                             file: file,
                             thumbnail: viewModel.thumbnail(for: file),
-                            showDetail: showDetail
+                            showDetail: showDetail,
+                            dateDisplayMode: viewModel.dateDisplayMode
                         )
                     } else {
                         Button {
@@ -215,7 +224,8 @@ struct MediaListDetailView: View {
                             MediaFileRowView(
                                 file: file,
                                 thumbnail: viewModel.thumbnail(for: file),
-                                showDetail: showDetail
+                                showDetail: showDetail,
+                                dateDisplayMode: viewModel.dateDisplayMode
                             )
                         }
                         .foregroundStyle(.primary)
@@ -347,7 +357,11 @@ struct MediaListDetailView: View {
                             .lineLimit(2)
                             .foregroundStyle(.primary)
                         HStack(spacing: 4) {
-                            Text(file.addedAt.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened, locale: .autoupdatingCurrent)))
+                            if let date = viewModel.dateDisplayMode.date(for: file) {
+                                Text(date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened, locale: .autoupdatingCurrent)))
+                            } else {
+                                Text("日時なし")
+                            }
                             if let size = file.fileSize {
                                 Text("·")
                                 Text(size, format: .byteCount(style: .file))
@@ -451,6 +465,7 @@ private struct MediaFileRowView: View {
     let file: MediaFile
     let thumbnail: UIImage?
     var showDetail: Bool = false
+    var dateDisplayMode: MediaListDateDisplayMode = .addedAt
 
     var body: some View {
         HStack(spacing: 12) {
@@ -470,6 +485,11 @@ private struct MediaFileRowView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    if let date = dateDisplayMode.date(for: file) {
+                        Text(date.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             Spacer(minLength: 0)

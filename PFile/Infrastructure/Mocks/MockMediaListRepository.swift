@@ -49,6 +49,8 @@ final class MockMediaListRepository: MediaListRepository {
                 if existing.path != item.path { existing.path = item.path }
                 if existing.name != item.name { existing.name = item.name }
                 if existing.fileId == nil, let fid = item.fileId { existing.fileId = fid }
+                if let size = item.size { existing.fileSize = size }
+                if let createdAt = item.createdAt { existing.sourceCreatedAt = createdAt }
                 file = existing
             } else {
                 file = MediaFile(
@@ -57,7 +59,9 @@ final class MockMediaListRepository: MediaListRepository {
                     path: item.path,
                     name: item.name,
                     itemTypeRaw: item.isVideo ? "video" : "image",
-                    fileId: item.fileId
+                    fileId: item.fileId,
+                    fileSize: item.size,
+                    sourceCreatedAt: item.createdAt
                 )
                 files.append(file)
             }

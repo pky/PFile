@@ -182,7 +182,8 @@ final class AppDataBackupService: AppDataBackupServiceProtocol {
                         itemTypeRaw: fileBackup.itemTypeRaw,
                         fileId: fileBackup.fileId,
                         fileSize: fileBackup.fileSize,
-                        addedAt: fileBackup.addedAt
+                        addedAt: fileBackup.addedAt,
+                        sourceCreatedAt: fileBackup.sourceCreatedAt
                     )
                     context.insert(file)
                     fileIndex[key] = file
@@ -573,6 +574,7 @@ private struct MediaFileBackup: Codable {
     let name: String
     let itemTypeRaw: String
     let addedAt: Date
+    let sourceCreatedAt: Date?
     let fileSize: Int64?
     let fileId: UInt64?
 
@@ -584,6 +586,7 @@ private struct MediaFileBackup: Codable {
         self.name = file.name
         self.itemTypeRaw = file.itemTypeRaw
         self.addedAt = file.addedAt
+        self.sourceCreatedAt = file.sourceCreatedAt
         self.fileSize = file.fileSize
         self.fileId = file.fileId
     }

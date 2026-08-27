@@ -9,7 +9,7 @@ final class SettingsViewModel {
     private enum Keys {
         static let defaultSortKey = "Settings.defaultSortKey"
         static let resumePlayback = "Settings.resumePlayback"
-        // orientationMode は OrientationService が管理するため Keys 不要
+        // 画面の向きは OrientationService が管理するため Keys 不要
     }
 
     // MARK: - Watch history limit options
@@ -49,8 +49,12 @@ final class SettingsViewModel {
         }
     }
 
-    var orientationMode: OrientationMode = .system {
-        didSet { OrientationService.shared.setMode(orientationMode) }
+    var documentOrientationMode: OrientationMode = .system {
+        didSet { OrientationService.shared.setDocumentMode(documentOrientationMode) }
+    }
+
+    var videoOrientationMode: OrientationMode = .system {
+        didSet { OrientationService.shared.setVideoMode(videoOrientationMode) }
     }
 
     // MARK: - State
@@ -121,7 +125,8 @@ final class SettingsViewModel {
         if let limit = defaults.object(forKey: WatchHistoryLimitSettings.key) as? Int {
             watchHistoryLimit = limit
         }
-        orientationMode = OrientationService.shared.mode
+        documentOrientationMode = OrientationService.shared.documentMode
+        videoOrientationMode = OrientationService.shared.videoMode
     }
 
     // MARK: - Actions

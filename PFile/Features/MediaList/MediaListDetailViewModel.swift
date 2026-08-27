@@ -5,12 +5,35 @@ enum MediaListSortKey: String, CaseIterable {
     case name
     case size
     case addedAt
+    case sourceCreatedAt
 
     var displayName: String {
         switch self {
         case .name: return "名前"
         case .size: return "サイズ"
         case .addedAt: return "追加順"
+        case .sourceCreatedAt: return "元ファイル日時"
+        }
+    }
+}
+
+enum MediaListDateDisplayMode: String, CaseIterable {
+    case addedAt
+    case sourceCreatedAt
+
+    var displayName: String {
+        switch self {
+        case .addedAt: return "リスト登録日時"
+        case .sourceCreatedAt: return "元ファイル日時"
+        }
+    }
+
+    func date(for file: MediaFile) -> Date? {
+        switch self {
+        case .addedAt:
+            return file.addedAt
+        case .sourceCreatedAt:
+            return file.sourceCreatedAt
         }
     }
 }
@@ -32,6 +55,7 @@ final class MediaListDetailViewModel {
     var sortOrder: SortOrder = .descending {
         didSet { refreshFiles(reason: "sort_order") }
     }
+    var dateDisplayMode: MediaListDateDisplayMode = .addedAt
 
     private let repository: any MediaListRepository
     private let remoteConnectionRepository: (any RemoteConnectionRepository)?
@@ -41,6 +65,7 @@ final class MediaListDetailViewModel {
     private var thumbnailCacheObserver: ThumbnailCacheClearObserver?
     private static let sortKeyDefaultsKey = "MediaListDetail.sortKey"
     private static let sortOrderDefaultsKey = "MediaListDetail.sortOrder"
+    private static let dateDisplayModeDefaultsKey = "MediaListDetail.dateDisplayMode"
 
     init(
         list: MediaList,
@@ -66,6 +91,10 @@ final class MediaListDetailViewModel {
         if let raw = UserDefaults.standard.string(forKey: Self.sortOrderDefaultsKey),
            let saved = SortOrder(rawValue: raw) {
             sortOrder = saved
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.dateDisplayModeDefaultsKey),
+           let saved = MediaListDateDisplayMode(rawValue: raw) {
+            dateDisplayMode = saved
         }
         refreshFiles(reason: "init")
     }
@@ -173,6 +202,7 @@ final class MediaListDetailViewModel {
     func applySortChange() {
         UserDefaults.standard.set(sortKey.rawValue, forKey: Self.sortKeyDefaultsKey)
         UserDefaults.standard.set(sortOrder.rawValue, forKey: Self.sortOrderDefaultsKey)
+        UserDefaults.standard.set(dateDisplayMode.rawValue, forKey: Self.dateDisplayModeDefaultsKey)
     }
 
     func refreshFiles(reason: String = "items_changed") {
@@ -257,6 +287,10 @@ final class MediaListDetailViewModel {
             sorted = files.sorted { ($0.fileSize ?? 0) < ($1.fileSize ?? 0) }
         case .addedAt:
             sorted = files.sorted { $0.addedAt < $1.addedAt }
+        case .sourceCreatedAt:
+            sorted = files.sorted {
+                ($0.sourceCreatedAt ?? .distantPast) < ($1.sourceCreatedAt ?? .distantPast)
+            }
         }
         return sortOrder == .ascending ? sorted : Array(sorted.reversed())
     }
