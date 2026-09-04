@@ -100,29 +100,31 @@ final class SMBClientManager {
         }
     }
 
-    func warmUpFile(for connection: RemoteConnection, at path: String) async throws {
+    /// 指定ファイルの途中をランダムに 1MiB 読み、NAS の HDD を起こす。
+    func warmUpFile(for connection: RemoteConnection, at path: String, fileSize: Int64?) async throws {
         let credential = try loadCredential(for: connection)
         let shareName = credential.shareName == "/" ? "" : credential.shareName
         let client = try client(for: connection)
 
         do {
-            try await readFileHeader(client: client, shareName: shareName, path: path)
+            try await readWarmUpBlock(client: client, shareName: shareName, path: path, fileSize: fileSize)
         } catch {
             let reconnectedClient = try reconnectClient(for: connection)
-            try await readFileHeader(client: reconnectedClient, shareName: shareName, path: path)
+            try await readWarmUpBlock(client: reconnectedClient, shareName: shareName, path: path, fileSize: fileSize)
         }
     }
 
-    func warmUpFirstReadableFile(for connection: RemoteConnection, at path: String) async throws {
+    /// ディレクトリ配下（深さ 3 まで）から最大の動画を探し、その途中をランダムに読む。
+    func warmUpDirectoryFile(for connection: RemoteConnection, at path: String) async throws {
         let credential = try loadCredential(for: connection)
         let shareName = credential.shareName == "/" ? "" : credential.shareName
         let client = try client(for: connection)
 
         do {
-            try await warmUpFirstReadableFile(client: client, shareName: shareName, path: path)
+            try await warmUpDirectoryFile(client: client, shareName: shareName, path: path)
         } catch {
             let reconnectedClient = try reconnectClient(for: connection)
-            try await warmUpFirstReadableFile(client: reconnectedClient, shareName: shareName, path: path)
+            try await warmUpDirectoryFile(client: reconnectedClient, shareName: shareName, path: path)
         }
     }
 
@@ -176,70 +178,57 @@ final class SMBClientManager {
         return relative.precomposedStringWithCanonicalMapping
     }
 
-    private func readFileHeader(client: SMB2Manager, shareName: String, path: String) async throws {
+    private func readWarmUpBlock(
+        client: SMB2Manager,
+        shareName: String,
+        path: String,
+        fileSize: Int64?
+    ) async throws {
         try await SMB2OperationGate.runAsync {
             try await client.connectShare(name: shareName)
         }
         let filePath = normalizedRelativePath(path)
-        _ = try await client.contents(atPath: filePath, range: UInt64(0)..<UInt64(1024 * 1024))
+        let range = SMBWarmUpPlanner.readRange(fileSize: fileSize)
+        _ = try await client.contents(atPath: filePath, range: range)
     }
 
-    private func warmUpFirstReadableFile(client: SMB2Manager, shareName: String, path: String) async throws {
+    private func warmUpDirectoryFile(client: SMB2Manager, shareName: String, path: String) async throws {
         try await SMB2OperationGate.runAsync {
             try await client.connectShare(name: shareName)
         }
-        let rootPath = normalizedRelativePath(path)
-        guard let filePath = try await findFirstReadableFilePath(client: client, path: rootPath, remainingDepth: 3) else {
+        guard let target = try await findWarmUpTarget(client: client, path: path, remainingDepth: 3) else {
             return
         }
-        _ = try await client.contents(atPath: filePath, range: UInt64(0)..<UInt64(1024 * 1024))
+        let range = SMBWarmUpPlanner.readRange(fileSize: target.size)
+        _ = try await client.contents(atPath: normalizedRelativePath(target.path), range: range)
     }
 
-    private func findFirstReadableFilePath(
+    private func findWarmUpTarget(
         client: SMB2Manager,
         path: String,
         remainingDepth: Int
-    ) async throws -> String? {
+    ) async throws -> DirectoryItem? {
+        let directoryPath = normalizedRelativePath(path)
         let entries = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[[URLResourceKey: any Sendable]], Error>) in
-            client.contentsOfDirectory(atPath: path) { cont.resume(with: $0) }
+            client.contentsOfDirectory(atPath: directoryPath) { cont.resume(with: $0) }
         }
-
-        let visibleEntries = entries.filter { entry in
-            guard let name = entry[.nameKey] as? String else { return false }
-            return !name.hasPrefix(".")
-        }
-
-        if let file = visibleEntries.first(where: { ($0[.isDirectoryKey] as? Bool) != true }),
-           let filePath = warmUpEntryPath(file, parentPath: path) {
-            return filePath
+        let items = entries.compactMap { DirectoryItem(smbEntry: $0, parentPath: path) }
+        if let target = SMBWarmUpPlanner.preferredItem(in: items) {
+            return target
         }
 
         guard remainingDepth > 0 else { return nil }
 
-        for directory in visibleEntries.prefix(12) where (directory[.isDirectoryKey] as? Bool) == true {
-            guard let directoryPath = warmUpEntryPath(directory, parentPath: path) else { continue }
-            if let filePath = try? await findFirstReadableFilePath(
+        for directory in items.filter(\.isDirectory).prefix(12) {
+            if let target = try? await findWarmUpTarget(
                 client: client,
-                path: directoryPath,
+                path: directory.path,
                 remainingDepth: remainingDepth - 1
             ) {
-                return filePath
+                return target
             }
         }
 
-        return nil
-    }
-
-    private func warmUpEntryPath(_ entry: [URLResourceKey: any Sendable], parentPath: String) -> String? {
-        guard let name = entry[.nameKey] as? String else { return nil }
-        let parent = parentPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let pathFromParent = parent.isEmpty ? name : "\(parent)/\(name)"
-        if !pathFromParent.isEmpty {
-            return normalizedRelativePath(pathFromParent)
-        }
-        if let rawPath = entry[.pathKey] as? String {
-            return normalizedRelativePath(rawPath)
-        }
         return nil
     }
 
@@ -250,11 +239,11 @@ final class SMBClientManager {
         throw SMBClientError.simulatorUnsupported
     }
 
-    func warmUpFile(for connection: RemoteConnection, at path: String) async throws {
+    func warmUpFile(for connection: RemoteConnection, at path: String, fileSize: Int64?) async throws {
         throw SMBClientError.simulatorUnsupported
     }
 
-    func warmUpFirstReadableFile(for connection: RemoteConnection, at path: String) async throws {
+    func warmUpDirectoryFile(for connection: RemoteConnection, at path: String) async throws {
         throw SMBClientError.simulatorUnsupported
     }
 

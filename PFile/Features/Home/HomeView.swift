@@ -106,7 +106,7 @@ struct HomeView: View {
             }
 
             do {
-                try await appEnvironment.smbClientManager.warmUpFirstReadableFile(
+                try await appEnvironment.smbClientManager.warmUpDirectoryFile(
                     for: connection,
                     at: connection.startPath
                 )

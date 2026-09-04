@@ -206,7 +206,7 @@ final class SMBFileRepository: FileRepository {
 // MARK: - DirectoryItem + SMB entry
 
 #if !targetEnvironment(simulator)
-private extension DirectoryItem {
+extension DirectoryItem {
     init?(smbEntry entry: [URLResourceKey: any Sendable], parentPath: String) {
         guard let name = entry[.nameKey] as? String, !name.hasPrefix(".") else { return nil }
         let isDir = entry[.isDirectoryKey] as? Bool ?? false

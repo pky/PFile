@@ -333,17 +333,12 @@ final class FileBrowserViewModel {
                 )
                 MediaDiagnostics.end(interval, mediaID: browseID, result: result)
             }
-            if let firstVideo = items.first(where: { $0.isVideo }) {
-                try? await smbClientManager.warmUpFile(for: connection, at: firstVideo.path)
+            if let target = SMBWarmUpPlanner.preferredItem(in: items) {
+                try? await smbClientManager.warmUpFile(for: connection, at: target.path, fileSize: target.size)
                 return
             }
 
-            if let firstFile = items.first(where: { !$0.isDirectory }) {
-                try? await smbClientManager.warmUpFile(for: connection, at: firstFile.path)
-                return
-            }
-
-            try? await smbClientManager.warmUpFirstReadableFile(for: connection, at: currentPath)
+            try? await smbClientManager.warmUpDirectoryFile(for: connection, at: currentPath)
         }
     }
 
