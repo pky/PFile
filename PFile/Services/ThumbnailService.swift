@@ -110,6 +110,39 @@ protocol ThumbnailServiceProtocol {
 
 extension Notification.Name {
     static let thumbnailCacheDidClear = Notification.Name("thumbnailCacheDidClear")
+    /// ユーザーが選び直したサムネイルを、同じキーを表示中の全画面へ伝える
+    static let thumbnailDidUpdate = Notification.Name("thumbnailDidUpdate")
+}
+
+/// 選び直したサムネイルを受け取り、表示中の画面が持つ表示用キャッシュを差し替える。
+/// ブラウズ・リスト・視聴履歴が別々に持つ表示用キャッシュを、保存先と同じ 1 つの状態に揃える。
+final class ThumbnailUpdateObserver {
+    static let keyUserInfoKey = "key"
+    static let imageUserInfoKey = "image"
+
+    private var observer: NSObjectProtocol?
+
+    init(onUpdate: @escaping @MainActor (_ key: String, _ image: UIImage) -> Void) {
+        observer = NotificationCenter.default.addObserver(
+            forName: .thumbnailDidUpdate,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard let key = notification.userInfo?[Self.keyUserInfoKey] as? String,
+                  let image = notification.userInfo?[Self.imageUserInfoKey] as? UIImage else { return }
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { onUpdate(key, image) }
+            } else {
+                Task { @MainActor in onUpdate(key, image) }
+            }
+        }
+    }
+
+    deinit {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 }
 
 final class ThumbnailCacheClearObserver {
@@ -217,6 +250,14 @@ final class ThumbnailService: ThumbnailServiceProtocol {
         let cost = Int(normalized.size.width * normalized.size.height * 4)
         memoryCache.setObject(normalized, forKey: key as NSString, cost: cost)
         saveToDiskAsync(normalized, key: key)
+        NotificationCenter.default.post(
+            name: .thumbnailDidUpdate,
+            object: nil,
+            userInfo: [
+                ThumbnailUpdateObserver.keyUserInfoKey: key,
+                ThumbnailUpdateObserver.imageUserInfoKey: normalized,
+            ]
+        )
         return normalized
     }
 

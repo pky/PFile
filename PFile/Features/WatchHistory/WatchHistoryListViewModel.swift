@@ -16,6 +16,7 @@ final class WatchHistoryListViewModel {
     private let remoteConnectionRepository: (any RemoteConnectionRepository)?
     private let mediaThumbnailProvider: (any MediaThumbnailProviding)?
     private var thumbnailCacheObserver: ThumbnailCacheClearObserver?
+    private var thumbnailUpdateObserver: ThumbnailUpdateObserver?
 
     init(
         watchHistoryRepository: any WatchHistoryRepository,
@@ -27,6 +28,10 @@ final class WatchHistoryListViewModel {
         self.mediaThumbnailProvider = mediaThumbnailProvider
         self.thumbnailCacheObserver = ThumbnailCacheClearObserver { [weak self] in
             self?.thumbnails.removeAll()
+        }
+        self.thumbnailUpdateObserver = ThumbnailUpdateObserver { [weak self] key, image in
+            guard let self, self.thumbnails[key] != nil else { return }
+            self.thumbnails[key] = image
         }
     }
 

@@ -28,22 +28,49 @@ enum SortOrder: String, CaseIterable {
     }
 }
 
+/// ブラウズとリストで同じ並び替え規則を共有するための最小の属性。
+protocol FileSortable {
+    var sortableName: String { get }
+    var sortableSize: Int64? { get }
+    var sortableModifiedAt: Date? { get }
+    var sortableCreatedAt: Date? { get }
+}
+
+extension DirectoryItem: FileSortable {
+    var sortableName: String { name }
+    var sortableSize: Int64? { size }
+    var sortableModifiedAt: Date? { modifiedAt }
+    var sortableCreatedAt: Date? { createdAt }
+}
+
+extension MediaFile: FileSortable {
+    var sortableName: String { name }
+    var sortableSize: Int64? { fileSize }
+    var sortableModifiedAt: Date? { sourceModifiedAt }
+    var sortableCreatedAt: Date? { sourceCreatedAt }
+}
+
 final class SortService {
 
     func sort(_ items: [DirectoryItem], by key: SortKey, order: SortOrder, foldersFirst: Bool = false) -> [DirectoryItem] {
-        let sorted: [DirectoryItem]
-        switch key {
-        case .name:
-            sorted = items.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        case .size:
-            sorted = items.sorted { ($0.size ?? 0) < ($1.size ?? 0) }
-        case .modifiedAt:
-            sorted = items.sorted { ($0.modifiedAt ?? .distantPast) < ($1.modifiedAt ?? .distantPast) }
-        case .createdAt:
-            sorted = items.sorted { ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast) }
-        }
-        let ordered = order == .ascending ? sorted : sorted.reversed()
+        let ordered = sortFiles(items, by: key, order: order)
         guard foldersFirst else { return ordered }
         return ordered.filter { $0.isDirectory } + ordered.filter { !$0.isDirectory }
+    }
+
+    /// ブラウズとリストで共通の並び替え。
+    func sortFiles<T: FileSortable>(_ items: [T], by key: SortKey, order: SortOrder) -> [T] {
+        let sorted: [T]
+        switch key {
+        case .name:
+            sorted = items.sorted { $0.sortableName.localizedStandardCompare($1.sortableName) == .orderedAscending }
+        case .size:
+            sorted = items.sorted { ($0.sortableSize ?? 0) < ($1.sortableSize ?? 0) }
+        case .modifiedAt:
+            sorted = items.sorted { ($0.sortableModifiedAt ?? .distantPast) < ($1.sortableModifiedAt ?? .distantPast) }
+        case .createdAt:
+            sorted = items.sorted { ($0.sortableCreatedAt ?? .distantPast) < ($1.sortableCreatedAt ?? .distantPast) }
+        }
+        return order == .ascending ? sorted : sorted.reversed()
     }
 }

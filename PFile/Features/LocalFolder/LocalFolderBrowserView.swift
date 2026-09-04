@@ -133,6 +133,7 @@ final class LocalFolderBrowserViewModel {
     private let sourceID: UUID
     private let rootURL: URL
     private var thumbnailCacheObserver: ThumbnailCacheClearObserver?
+    private var thumbnailUpdateObserver: ThumbnailUpdateObserver?
     private(set) var currentPath: String
 
     var listRegistrationFileRepository: any FileRepository {
@@ -152,6 +153,10 @@ final class LocalFolderBrowserViewModel {
         self.mediaThumbnailProvider = mediaThumbnailProvider
         self.thumbnailCacheObserver = ThumbnailCacheClearObserver { [weak self] in
             self?.thumbnails.removeAll()
+        }
+        self.thumbnailUpdateObserver = ThumbnailUpdateObserver { [weak self] key, image in
+            guard let self, self.thumbnails[key] != nil else { return }
+            self.thumbnails[key] = image
         }
     }
 

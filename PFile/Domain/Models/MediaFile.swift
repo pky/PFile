@@ -33,6 +33,8 @@ final class MediaFile {
     var addedAt: Date
     /// リスト登録日時とは別に、ブラウザで取得した元ファイルの作成日時を保持する。
     var sourceCreatedAt: Date?
+    /// ブラウザの「更新日時」と同じ意味を持つ元ファイルの更新日時。
+    var sourceModifiedAt: Date?
     var fileSize: Int64?
     /// SMBサーバーの inode 番号。同一FS内でのファイル移動後も変わらない（サーバー依存）
     var fileId: UInt64?
@@ -49,7 +51,8 @@ final class MediaFile {
         fileId: UInt64? = nil,
         fileSize: Int64? = nil,
         addedAt: Date = Date(),
-        sourceCreatedAt: Date? = nil
+        sourceCreatedAt: Date? = nil,
+        sourceModifiedAt: Date? = nil
     ) {
         self.id = id
         self.connectionId = connectionId
@@ -61,5 +64,6 @@ final class MediaFile {
         self.fileSize = fileSize
         self.addedAt = addedAt
         self.sourceCreatedAt = sourceCreatedAt
+        self.sourceModifiedAt = sourceModifiedAt
     }
 }

@@ -51,6 +51,7 @@ final class MockMediaListRepository: MediaListRepository {
                 if existing.fileId == nil, let fid = item.fileId { existing.fileId = fid }
                 if let size = item.size { existing.fileSize = size }
                 if let createdAt = item.createdAt { existing.sourceCreatedAt = createdAt }
+                if let modifiedAt = item.modifiedAt { existing.sourceModifiedAt = modifiedAt }
                 file = existing
             } else {
                 file = MediaFile(
@@ -61,7 +62,8 @@ final class MockMediaListRepository: MediaListRepository {
                     itemTypeRaw: item.isVideo ? "video" : "image",
                     fileId: item.fileId,
                     fileSize: item.size,
-                    sourceCreatedAt: item.createdAt
+                    sourceCreatedAt: item.createdAt,
+                    sourceModifiedAt: item.modifiedAt
                 )
                 files.append(file)
             }

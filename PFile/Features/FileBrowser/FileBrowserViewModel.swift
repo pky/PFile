@@ -65,6 +65,7 @@ final class FileBrowserViewModel {
     private var thumbnailRetryTasks: [String: Task<Void, Never>] = [:]
     private var thumbnailRetryAttempts: [String: Int] = [:]
     private var thumbnailCacheObserver: ThumbnailCacheClearObserver?
+    private var thumbnailUpdateObserver: ThumbnailUpdateObserver?
     private var isNetworkWorkSuspended = false
 
     private static let sortKeyDefaultsKey        = "FileBrowser.sortKey"
@@ -104,6 +105,10 @@ final class FileBrowserViewModel {
         self.currentPath = startPath ?? connection.startPath
         self.thumbnailCacheObserver = ThumbnailCacheClearObserver { [weak self] in
             self?.thumbnails.removeAll()
+        }
+        self.thumbnailUpdateObserver = ThumbnailUpdateObserver { [weak self] key, image in
+            guard let self, self.thumbnails[key] != nil else { return }
+            self.thumbnails[key] = image
         }
 
         if let raw = UserDefaults.standard.string(forKey: Self.sortKeyDefaultsKey),

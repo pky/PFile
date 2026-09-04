@@ -4,36 +4,68 @@ import UIKit
 enum MediaListSortKey: String, CaseIterable {
     case name
     case size
-    case addedAt
-    case sourceCreatedAt
+    case modifiedAt
+    case createdAt
+    case listAddedAt
 
     var displayName: String {
         switch self {
-        case .name: return "名前"
-        case .size: return "サイズ"
-        case .addedAt: return "追加順"
-        case .sourceCreatedAt: return "元ファイル日時"
+        case .listAddedAt: return "リスト登録日時"
+        default: return fileSortKey?.displayName ?? rawValue
+        }
+    }
+
+    /// ブラウズと共通のソートキー。リスト登録日時だけはリスト固有の並び順
+    var fileSortKey: SortKey? {
+        switch self {
+        case .name: return .name
+        case .size: return .size
+        case .modifiedAt: return .modifiedAt
+        case .createdAt: return .createdAt
+        case .listAddedAt: return nil
+        }
+    }
+
+    /// 旧バージョンで保存した設定値を現在のキーへ読み替える
+    init?(persistedRawValue: String) {
+        switch persistedRawValue {
+        case "addedAt": self = .listAddedAt
+        case "sourceCreatedAt": self = .createdAt
+        default: self.init(rawValue: persistedRawValue)
         }
     }
 }
 
 enum MediaListDateDisplayMode: String, CaseIterable {
-    case addedAt
-    case sourceCreatedAt
+    case modifiedAt
+    case createdAt
+    case listAddedAt
 
     var displayName: String {
         switch self {
-        case .addedAt: return "リスト登録日時"
-        case .sourceCreatedAt: return "元ファイル日時"
+        case .modifiedAt: return SortKey.modifiedAt.displayName
+        case .createdAt: return SortKey.createdAt.displayName
+        case .listAddedAt: return "リスト登録日時"
+        }
+    }
+
+    /// 旧バージョンで保存した設定値を現在のモードへ読み替える
+    init?(persistedRawValue: String) {
+        switch persistedRawValue {
+        case "addedAt": self = .listAddedAt
+        case "sourceCreatedAt": self = .createdAt
+        default: self.init(rawValue: persistedRawValue)
         }
     }
 
     func date(for file: MediaFile) -> Date? {
         switch self {
-        case .addedAt:
-            return file.addedAt
-        case .sourceCreatedAt:
+        case .modifiedAt:
+            return file.sourceModifiedAt
+        case .createdAt:
             return file.sourceCreatedAt
+        case .listAddedAt:
+            return file.addedAt
         }
     }
 }
@@ -49,20 +81,23 @@ final class MediaListDetailViewModel {
     private(set) var thumbnails: [String: UIImage] = [:]
     private(set) var connections: [UUID: RemoteConnection] = [:]
     private(set) var fileSortCount = 0
-    var sortKey: MediaListSortKey = .addedAt {
+    var sortKey: MediaListSortKey = .listAddedAt {
         didSet { refreshFiles(reason: "sort_key") }
     }
     var sortOrder: SortOrder = .descending {
         didSet { refreshFiles(reason: "sort_order") }
     }
-    var dateDisplayMode: MediaListDateDisplayMode = .addedAt
+    var dateDisplayMode: MediaListDateDisplayMode = .listAddedAt
 
     private let repository: any MediaListRepository
     private let remoteConnectionRepository: (any RemoteConnectionRepository)?
     private let mediaThumbnailProvider: (any MediaThumbnailProviding)?
     private let thumbnailService: ThumbnailService?
     private let smbClientManager: SMBClientManager?
+    private let fileRepositoryFactory: (RemoteConnection) -> (any FileRepository)?
+    private let sortService = SortService()
     private var thumbnailCacheObserver: ThumbnailCacheClearObserver?
+    private var thumbnailUpdateObserver: ThumbnailUpdateObserver?
     private static let sortKeyDefaultsKey = "MediaListDetail.sortKey"
     private static let sortOrderDefaultsKey = "MediaListDetail.sortOrder"
     private static let dateDisplayModeDefaultsKey = "MediaListDetail.dateDisplayMode"
@@ -73,7 +108,8 @@ final class MediaListDetailViewModel {
         remoteConnectionRepository: (any RemoteConnectionRepository)? = nil,
         mediaThumbnailProvider: (any MediaThumbnailProviding)? = nil,
         thumbnailService: ThumbnailService? = nil,
-        smbClientManager: SMBClientManager? = nil
+        smbClientManager: SMBClientManager? = nil,
+        fileRepositoryFactory: ((RemoteConnection) -> (any FileRepository)?)? = nil
     ) {
         self.list = list
         self.repository = repository
@@ -81,11 +117,19 @@ final class MediaListDetailViewModel {
         self.mediaThumbnailProvider = mediaThumbnailProvider
         self.thumbnailService = thumbnailService
         self.smbClientManager = smbClientManager
+        self.fileRepositoryFactory = fileRepositoryFactory ?? { connection in
+            guard let smbClientManager, connection.serviceType == .smb else { return nil }
+            return try? SMBFileRepository(connection: connection, clientManager: smbClientManager)
+        }
         self.thumbnailCacheObserver = ThumbnailCacheClearObserver { [weak self] in
             self?.thumbnails.removeAll()
         }
+        self.thumbnailUpdateObserver = ThumbnailUpdateObserver { [weak self] key, image in
+            guard let self, self.thumbnails[key] != nil else { return }
+            self.thumbnails[key] = image
+        }
         if let raw = UserDefaults.standard.string(forKey: Self.sortKeyDefaultsKey),
-           let saved = MediaListSortKey(rawValue: raw) {
+           let saved = MediaListSortKey(persistedRawValue: raw) {
             sortKey = saved
         }
         if let raw = UserDefaults.standard.string(forKey: Self.sortOrderDefaultsKey),
@@ -93,7 +137,7 @@ final class MediaListDetailViewModel {
             sortOrder = saved
         }
         if let raw = UserDefaults.standard.string(forKey: Self.dateDisplayModeDefaultsKey),
-           let saved = MediaListDateDisplayMode(rawValue: raw) {
+           let saved = MediaListDateDisplayMode(persistedRawValue: raw) {
             dateDisplayMode = saved
         }
         refreshFiles(reason: "init")
@@ -107,6 +151,40 @@ final class MediaListDetailViewModel {
             connections = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
         }
         refreshFiles(reason: "load")
+        await backfillSourceModifiedDates()
+    }
+
+    /// 更新日時を持たない登録済み項目を親フォルダの一覧から補完する。
+    /// 旧バージョンで登録した項目でもブラウズと同じ更新日時順に並ぶようにする。
+    private func backfillSourceModifiedDates() async {
+        let targets = list.items.filter { $0.sourceModifiedAt == nil }
+        guard !targets.isEmpty else { return }
+
+        let grouped = Dictionary(grouping: targets) { file in
+            "\(file.sourceID)|\((file.path as NSString).deletingLastPathComponent)"
+        }
+        var didUpdate = false
+        for files in grouped.values {
+            guard let first = files.first,
+                  let connection = sourceConnection(for: first),
+                  let fileRepository = fileRepositoryFactory(connection) else { continue }
+            let directory = (first.path as NSString).deletingLastPathComponent
+            guard let items = try? await fileRepository.listDirectory(at: directory) else { continue }
+            let matched = items.filter { item in
+                item.modifiedAt != nil && files.contains { file in
+                    if let fileId = file.fileId, fileId > 0 {
+                        return item.fileId == fileId
+                    }
+                    return item.path == file.path
+                }
+            }
+            guard !matched.isEmpty else { continue }
+            try? await repository.addItems(matched, sourceID: first.sourceID, to: list)
+            didUpdate = true
+        }
+        if didUpdate {
+            refreshFiles(reason: "source_dates_backfilled")
+        }
     }
 
     func removeFile(_ file: MediaFile) async {
@@ -279,19 +357,10 @@ final class MediaListDetailViewModel {
     }
 
     private func sortFiles(_ files: [MediaFile]) -> [MediaFile] {
-        let sorted: [MediaFile]
-        switch sortKey {
-        case .name:
-            sorted = files.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        case .size:
-            sorted = files.sorted { ($0.fileSize ?? 0) < ($1.fileSize ?? 0) }
-        case .addedAt:
-            sorted = files.sorted { $0.addedAt < $1.addedAt }
-        case .sourceCreatedAt:
-            sorted = files.sorted {
-                ($0.sourceCreatedAt ?? .distantPast) < ($1.sourceCreatedAt ?? .distantPast)
-            }
+        if let fileSortKey = sortKey.fileSortKey {
+            return sortService.sortFiles(files, by: fileSortKey, order: sortOrder)
         }
+        let sorted = files.sorted { $0.addedAt < $1.addedAt }
         return sortOrder == .ascending ? sorted : Array(sorted.reversed())
     }
 

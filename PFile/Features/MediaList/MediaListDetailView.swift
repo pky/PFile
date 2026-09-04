@@ -465,7 +465,7 @@ private struct MediaFileRowView: View {
     let file: MediaFile
     let thumbnail: UIImage?
     var showDetail: Bool = false
-    var dateDisplayMode: MediaListDateDisplayMode = .addedAt
+    var dateDisplayMode: MediaListDateDisplayMode = .listAddedAt
 
     var body: some View {
         HStack(spacing: 12) {
