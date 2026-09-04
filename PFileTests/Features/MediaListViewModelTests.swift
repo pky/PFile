@@ -176,13 +176,13 @@ struct MediaListViewModelTests {
         list.items = [oldFile, newFile]
         let (vm, _) = makeDetailViewModel(list: list)
 
-        vm.sortKey = .addedAt
+        vm.sortKey = .listAddedAt
         vm.sortOrder = .descending
 
         #expect(vm.files.map(\.name) == ["new.mp4", "old.mp4"])
     }
 
-    @Test("detail は元ファイル日時で並び替えできる")
+    @Test("detail は追加日時で並び替えできる")
     func detail_sortBySourceCreatedAtDescending_success() async {
         let list = MediaList(name: "テスト", sortOrder: 0)
         let oldDate = Date(timeIntervalSince1970: 100)
@@ -204,7 +204,7 @@ struct MediaListViewModelTests {
         list.items = [oldFile, newFile]
         let (vm, _) = makeDetailViewModel(list: list)
 
-        vm.sortKey = .sourceCreatedAt
+        vm.sortKey = .createdAt
         vm.sortOrder = .descending
 
         #expect(vm.files.map(\.name) == ["new.mp4", "old.mp4"])
