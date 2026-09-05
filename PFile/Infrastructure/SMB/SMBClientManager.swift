@@ -32,6 +32,10 @@ final class SMBClientManager {
         return client
     }
 
+    // 切断は必ず gracefully: true で行う。
+    // AMSMB2 の disconnect は libsmb2 の開いているディレクトリをすべて解放するため、
+    // 同じクライアントで contentsOfDirectory が走っている最中に即時切断すると
+    // 列挙中のエントリ名が解放済みメモリを指し、strlen で EXC_BAD_ACCESS になる。
     func reconnectClient(for connection: RemoteConnection) throws -> SMB2Manager {
         let oldClient: SMB2Manager?
         let newClient = try makeClient(for: connection)
@@ -43,7 +47,7 @@ final class SMBClientManager {
 
         Task {
             try? await SMB2OperationGate.runAsync {
-                try await oldClient?.disconnectShare()
+                try await oldClient?.disconnectShare(gracefully: true)
             }
         }
         return newClient
@@ -135,7 +139,7 @@ final class SMBClientManager {
         lock.unlock()
         Task {
             try? await SMB2OperationGate.runAsync {
-                try await client?.disconnectShare()
+                try await client?.disconnectShare(gracefully: true)
             }
         }
     }
@@ -148,7 +152,7 @@ final class SMBClientManager {
         Task {
             for c in all {
                 try? await SMB2OperationGate.runAsync {
-                    try await c.disconnectShare()
+                    try await c.disconnectShare(gracefully: true)
                 }
             }
         }
