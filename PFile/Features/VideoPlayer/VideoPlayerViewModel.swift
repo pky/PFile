@@ -46,6 +46,8 @@ final class VideoPlayerViewModel: NSObject {
         case avPlayer
     }
 
+    private var vlcIntendsToPlay = true
+    private var pendingVLCSeekSeconds: Double?
     var isPlaying = false
     var isMuted = false
     var currentPositionSeconds: Double = 0
@@ -56,16 +58,37 @@ final class VideoPlayerViewModel: NSObject {
     // MP4 / MOV は AVPlayer 経路で再生する。true のとき View は AVPlayerLayer を描画する。
     private(set) var usesAVPlayer = false
     private(set) var avPlayer: AVPlayer?
-    // AVPlayer 経路の drag 中スクラブで表示するプレビュー画像。
-    private(set) var scrubPreviewImage: UIImage?
     private var scrubPreviewTask: Task<Void, Never>?
+    private var scrubPreviewTaskID: UUID?
+    private var scrubPreviewState = VideoScrubPreviewState()
+    private var scrubPreviewDiagnostics: ScrubPreviewDiagnostics?
+
+    private struct ScrubPreviewDiagnostics {
+        let startedAt: TimeInterval
+        var inputCount = 0
+        var requestCount = 0
+        var completedCount = 0
+        var failureCount = 0
+        var totalExecutionMs = 0
+        var maxExecutionMs = 0
+        var totalSubmitWaitMs = 0
+        var maxSubmitWaitMs = 0
+        var firstCompletedMs: Int?
+        var lastDeltaSeconds: Double = -1
+    }
     // 一瞬の buffering でスピナーを点滅させないためのデバウンス。
     private var avBufferingDebounceTask: Task<Void, Never>?
     // シーク操作の開始時に再生中だったか。指を離したときの再開判定に使う。
     private var wasPlayingBeforeInteractiveSeek = false
     // AVPlayer 経路でユーザーが再生を望んでいるかの意図。buffering で揺れる isPlaying と違い、
     // 明示的な再生/一時停止だけで変わる。連続シーク中の再開判定をこの値で安定させる。
-    private var avIntendsToPlay = false
+    private var avIntendsToPlay: Bool {
+#if !targetEnvironment(simulator)
+        avController?.intendsToPlay ?? !hasEverStartedPlaying
+#else
+        false
+#endif
+    }
 
     private(set) var isBuffering = true
     private var hasEverStartedPlaying = false
@@ -124,6 +147,7 @@ final class VideoPlayerViewModel: NSObject {
         var totalLatencyMs = 0
         var maxLatencyMs = 0
         var bufferingDuringSeek = false
+        var shouldResume = false
 
         mutating func recordRequest(seconds: Double, issuedAt: CFAbsoluteTime) {
             requestCount += 1
@@ -218,6 +242,7 @@ final class VideoPlayerViewModel: NSObject {
         startupTimelineWatchdogTask?.cancel()
         startupTimelineWatchdogTask = nil
         interactiveSeekDiagnosticsFinalizeTask?.cancel()
+        if interactiveSeekDiagnostics != nil { logInteractiveSeekDiagnosticsSummary(result: "cancelled") }
         interactiveSeekDiagnosticsFinalizeTask = nil
         interactiveSeekDiagnostics = nil
         setupTask?.cancel()
@@ -242,7 +267,6 @@ final class VideoPlayerViewModel: NSObject {
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
             // toggle 前の状態から再生意図を確定する。buffering 中の isPlaying には依存しない。
-            avIntendsToPlay = (avController?.isPaused ?? true)
             avController?.togglePlayPause()
             return
         }
@@ -283,12 +307,18 @@ final class VideoPlayerViewModel: NSObject {
             return
         }
 #endif
-        let ms = Int32(max(0, seconds) * 1000)
+        guard let target = VideoSeekState.clamped(seconds, duration: durationSeconds) else { return }
+        // フォールバック準備中の操作も、新しいmediaの開始位置へ引き継ぐ。
+        if player.media == nil {
+            pendingVLCSeekSeconds = target
+            return
+        }
+        let ms = Int32(target * 1000)
         player.time = VLCTime(int: ms)
     }
 
     func updateInteractiveSeek(to seconds: Double) {
-        let clamped = max(0, seconds)
+        guard let clamped = VideoSeekState.clamped(seconds, duration: durationSeconds) else { return }
         pendingInteractiveSeekSeconds = clamped
         if !isInteractiveSeeking {
             isInteractiveSeeking = true
@@ -305,6 +335,13 @@ final class VideoPlayerViewModel: NSObject {
 
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
+            if scrubPreviewState.sessionID == nil {
+                scrubPreviewState.beginSession()
+                scrubPreviewDiagnostics = ScrubPreviewDiagnostics(startedAt: ProcessInfo.processInfo.systemUptime)
+            }
+            scrubPreviewDiagnostics?.inputCount += 1
+            scrubPreviewState.update(seconds: clamped, duration: durationSeconds,
+                                     now: ProcessInfo.processInfo.systemUptime)
             scheduleScrubPreview()
             return
         }
@@ -320,24 +357,29 @@ final class VideoPlayerViewModel: NSObject {
         guard isInteractiveSeeking else { return }
         interactiveSeekPreviewTask?.cancel()
         interactiveSeekPreviewTask = nil
-        scrubPreviewTask?.cancel()
-        scrubPreviewTask = nil
-        scrubPreviewImage = nil
-#if !targetEnvironment(simulator)
-        // 進行中のスクラブ読み出しを切り、再開シークへ SMB セッションを即座に明け渡す。
-        avController?.cancelThumbnailGeneration()
-#endif
+        stopScrubPreview()
         if let pendingInteractiveSeekSeconds {
             recordInteractiveSeekRequest(seconds: pendingInteractiveSeekSeconds)
             interactiveSeekDiagnostics?.finalRequestedSeconds = pendingInteractiveSeekSeconds
             seek(to: pendingInteractiveSeekSeconds)
         }
+#if !targetEnvironment(simulator)
+        interactiveSeekDiagnostics?.shouldResume = usesAVPlayer ? avIntendsToPlay : wasPlayingBeforeInteractiveSeek
+#else
+        interactiveSeekDiagnostics?.shouldResume = wasPlayingBeforeInteractiveSeek
+#endif
         isInteractiveSeeking = false
         pendingInteractiveSeekSeconds = nil
         lastInteractiveSeekPreviewSeconds = nil
-        if wasPlayingBeforeInteractiveSeek {
+#if !targetEnvironment(simulator)
+        if usesAVPlayer {
+            avController?.endInteractiveSeek()
+        } else if wasPlayingBeforeInteractiveSeek {
             resumeAfterInteractiveSeek()
         }
+#else
+        if wasPlayingBeforeInteractiveSeek { resumeAfterInteractiveSeek() }
+#endif
         wasPlayingBeforeInteractiveSeek = false
         finalizeInteractiveSeekDiagnosticsAfterDelay()
     }
@@ -345,7 +387,7 @@ final class VideoPlayerViewModel: NSObject {
     private func pauseForInteractiveSeek() {
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
-            avController?.pause()
+            avController?.beginInteractiveSeek()
             return
         }
 #endif
@@ -384,30 +426,68 @@ final class VideoPlayerViewModel: NSObject {
         }
     }
 
+    private func stopScrubPreview() {
+        logScrubPreviewSummary()
+        scrubPreviewState.endSession()
+        scrubPreviewTask?.cancel()
+        scrubPreviewTask = nil
+        scrubPreviewTaskID = nil
+        // 主AVPlayerの実行中seekは取消さず、確定目的の要求へ完了後に引き継ぐ。
+    }
+
+    private func logScrubPreviewSummary() {
+        guard let diagnostics = scrubPreviewDiagnostics else { return }
+        scrubPreviewDiagnostics = nil
 #if !targetEnvironment(simulator)
-    /// AVPlayer 経路の drag 中スクラブ。実 seek せず、最新ドラッグ位置のキーフレーム画像を表示する。
-    /// 1枚生成するたびにタスクを空けて、ドラッグ中は約100ms間隔で最新位置を取り直す。
+        let playerSeeking = avController?.isSeeking ?? false
+#else
+        let playerSeeking = false
+#endif
+        MediaDiagnostics.playback(
+            "event=scrub_preview_summary mediaID=\(mediaID) playerID=\(playerID) path=avplayer_paused_seek inputs=\(diagnostics.inputCount) requests=\(diagnostics.requestCount) completed=\(diagnostics.completedCount) failures=\(diagnostics.failureCount) firstCompletedMs=\(diagnostics.firstCompletedMs ?? -1) totalExecutionMs=\(diagnostics.totalExecutionMs) maxExecutionMs=\(diagnostics.maxExecutionMs) totalSubmitWaitMs=\(diagnostics.totalSubmitWaitMs) maxSubmitWaitMs=\(diagnostics.maxSubmitWaitMs) lastDeltaSeconds=\(diagnostics.lastDeltaSeconds) seekInFlight=\(playerSeeking)"
+        )
+    }
+
+#if !targetEnvironment(simulator)
+    /// 初回は即時、継続入力を約100ms間隔に集約して主プレイヤーへ渡す。
     private func scheduleScrubPreview() {
-        // 生成は常に1本だけ走らせる。ドラッグ中の重複生成が単一 SMB セッションを飽和させないよう、
-        // 走っている間は新規 schedule をはじき、完了時に最新位置だけ取り直す。
-        guard scrubPreviewTask == nil else { return }
-        scrubPreviewTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(100))
-            guard !Task.isCancelled else { return }
-            await self?.runScrubPreviewLoop()
+        guard scrubPreviewTask == nil, let sessionID = scrubPreviewState.sessionID,
+              let controller = avController, usesAVPlayer, isInteractiveSeeking,
+              !isTearingDownPlayback,
+              let delay = scrubPreviewState.delay(now: ProcessInfo.processInfo.systemUptime) else { return }
+        if delay <= 0 {
+            applyScrubPreviewRequest(sessionID: sessionID, controller: controller)
+            return
+        }
+        let taskID = UUID()
+        scrubPreviewTaskID = taskID
+        scrubPreviewTask = Task { @MainActor [weak self, weak controller] in
+            try? await Task.sleep(for: .milliseconds(Int(ceil(delay * 1000))))
+            guard let self else { return }
+            defer {
+                if self.scrubPreviewTaskID == taskID {
+                    self.scrubPreviewTask = nil
+                    self.scrubPreviewTaskID = nil
+                }
+            }
+            guard !Task.isCancelled, let controller,
+                  self.scrubPreviewTaskID == taskID else { return }
+            self.applyScrubPreviewRequest(sessionID: sessionID, controller: controller)
         }
     }
 
-    private func runScrubPreviewLoop() async {
-        defer { scrubPreviewTask = nil }
-        // 生成中に指が動いた場合だけ最新位置で取り直す。同じ位置なら抜ける。
-        while isInteractiveSeeking, let seconds = pendingInteractiveSeekSeconds,
-              let controller = avController {
-            let image = await controller.generateThumbnail(atSeconds: seconds)
-            guard isInteractiveSeeking else { return }
-            if let image { scrubPreviewImage = image }
-            if pendingInteractiveSeekSeconds == seconds { return }
+    private func applyScrubPreviewRequest(sessionID: UUID, controller: AVPlayerVideoController) {
+        guard isInteractiveSeeking, !isTearingDownPlayback, avController === controller,
+              scrubPreviewState.sessionID == sessionID,
+              let request = scrubPreviewState.takeRequest(now: ProcessInfo.processInfo.systemUptime) else { return }
+        let waitMs = max(0, Int((ProcessInfo.processInfo.systemUptime - request.requestedAt) * 1000))
+        scrubPreviewDiagnostics?.requestCount += 1
+        scrubPreviewDiagnostics?.totalSubmitWaitMs += waitMs
+        if let maximum = scrubPreviewDiagnostics?.maxSubmitWaitMs {
+            scrubPreviewDiagnostics?.maxSubmitWaitMs = max(maximum, waitMs)
         }
+        recordInteractiveSeekRequest(seconds: request.seconds)
+        controller.seekForScrubPreview(toSeconds: request.seconds, sessionID: request.sessionID)
     }
 #endif
 
@@ -416,7 +496,7 @@ final class VideoPlayerViewModel: NSObject {
         case .directSMB:
             return VideoPlayerInteractiveSeekPolicy.directSMBPreviewEnabled
         case .avPlayer:
-            // AVPlayer 経路は drag 中にライブ seek せず、サムネイルスクラブ（2c）で追従させる。
+            // AVPlayer経路は専用の入力集約とpaused seekで扱う。
             return false
         case .smbStream, .httpProxy, nil:
             return true
@@ -426,6 +506,7 @@ final class VideoPlayerViewModel: NSObject {
     private func beginInteractiveSeekDiagnostics(startedSeconds: Double) {
         interactiveSeekDiagnosticsFinalizeTask?.cancel()
         interactiveSeekDiagnosticsFinalizeTask = nil
+        if interactiveSeekDiagnostics != nil { logInteractiveSeekDiagnosticsSummary(result: "superseded") }
         interactiveSeekDiagnostics = InteractiveSeekDiagnostics(
             startedAt: CFAbsoluteTimeGetCurrent(),
             startedPlaybackSeconds: currentPositionSeconds,
@@ -456,6 +537,17 @@ final class VideoPlayerViewModel: NSObject {
                 "event=seek_first_response mediaID=\(mediaID) playerID=\(playerID) responseMs=\(firstResponse.responseMs) deltaSeconds=\(String(format: "%.2f", firstResponse.deltaSeconds)) observedSeconds=\(String(format: "%.2f", seconds))"
             )
         }
+        finishInteractiveSeekDiagnosticsIfReached()
+    }
+
+    private func finishInteractiveSeekDiagnosticsIfReached() {
+        guard !isInteractiveSeeking, interactiveSeekDiagnosticsFinalizeTask != nil,
+              let diagnostics = interactiveSeekDiagnostics,
+              let target = diagnostics.finalRequestedSeconds,
+              abs(currentPositionSeconds - target) <= 1.1,
+              !diagnostics.shouldResume || isPlaying else { return }
+        interactiveSeekDiagnosticsFinalizeTask?.cancel()
+        logInteractiveSeekDiagnosticsSummary(result: "timeline_position")
     }
 
     private func markInteractiveSeekBuffering() {
@@ -466,13 +558,14 @@ final class VideoPlayerViewModel: NSObject {
     private func finalizeInteractiveSeekDiagnosticsAfterDelay() {
         interactiveSeekDiagnosticsFinalizeTask?.cancel()
         interactiveSeekDiagnosticsFinalizeTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(1))
+            try? await Task.sleep(for: .seconds(30))
             guard !Task.isCancelled else { return }
-            self?.logInteractiveSeekDiagnosticsSummary()
+            self?.logInteractiveSeekDiagnosticsSummary(result: "timeout")
         }
+        finishInteractiveSeekDiagnosticsIfReached()
     }
 
-    private func logInteractiveSeekDiagnosticsSummary() {
+    private func logInteractiveSeekDiagnosticsSummary(result: String) {
         interactiveSeekDiagnosticsFinalizeTask = nil
         guard let diagnostics = interactiveSeekDiagnostics else { return }
         interactiveSeekDiagnostics = nil
@@ -487,11 +580,11 @@ final class VideoPlayerViewModel: NSObject {
         let finalDeltaSeconds = abs(finalObservedSeconds - finalRequestedSeconds)
         let firstResponseMs = diagnostics.firstResponseMs ?? -1
         let firstResponseDeltaSeconds = diagnostics.firstResponseDeltaSeconds ?? -1
-        let line = "event=seek_summary mediaID=\(mediaID) playerID=\(playerID) dragMs=\(dragMs) seekRequests=\(diagnostics.requestCount) firstResponseMs=\(firstResponseMs) firstResponseDeltaSeconds=\(String(format: "%.2f", firstResponseDeltaSeconds)) latencyCount=\(diagnostics.latencyCount) avgLatencyMs=\(avgLatencyMs) maxLatencyMs=\(diagnostics.maxLatencyMs) bufferingDuringSeek=\(diagnostics.bufferingDuringSeek) finalRequestedSeconds=\(String(format: "%.2f", finalRequestedSeconds)) finalObservedSeconds=\(String(format: "%.2f", finalObservedSeconds)) finalDeltaSeconds=\(String(format: "%.2f", finalDeltaSeconds))"
+        let line = "event=seek_summary result=\(result) observation=timeline mediaID=\(mediaID) playerID=\(playerID) dragMs=\(dragMs) seekRequests=\(diagnostics.requestCount) firstResponseMs=\(firstResponseMs) firstResponseDeltaSeconds=\(String(format: "%.2f", firstResponseDeltaSeconds)) latencyCount=\(diagnostics.latencyCount) avgLatencyMs=\(avgLatencyMs) maxLatencyMs=\(diagnostics.maxLatencyMs) bufferingDuringSeek=\(diagnostics.bufferingDuringSeek) finalRequestedSeconds=\(String(format: "%.2f", finalRequestedSeconds)) finalObservedSeconds=\(String(format: "%.2f", finalObservedSeconds)) finalDeltaSeconds=\(String(format: "%.2f", finalDeltaSeconds))"
         let telemetryLine = "[SeekDiag] summary | dragMs: \(dragMs) | seekRequests: \(diagnostics.requestCount) | firstResponseMs: \(firstResponseMs) | firstResponseDeltaSeconds: \(String(format: "%.2f", firstResponseDeltaSeconds)) | latencyCount: \(diagnostics.latencyCount) | avgLatencyMs: \(avgLatencyMs) | maxLatencyMs: \(diagnostics.maxLatencyMs) | bufferingDuringSeek: \(diagnostics.bufferingDuringSeek) | finalRequestedSeconds: \(String(format: "%.2f", finalRequestedSeconds)) | finalObservedSeconds: \(String(format: "%.2f", finalObservedSeconds)) | finalDeltaSeconds: \(String(format: "%.2f", finalDeltaSeconds)) | playerID: \(playerID)"
         MediaDiagnostics.playback(line)
         if let seekInterval {
-            MediaDiagnostics.end(seekInterval, mediaID: mediaID, result: "delta=\(String(format: "%.2f", finalDeltaSeconds))")
+            MediaDiagnostics.end(seekInterval, mediaID: mediaID, result: "\(result) delta=\(String(format: "%.2f", finalDeltaSeconds))")
             self.seekInterval = nil
         }
         FirebaseSupport.logCrashlytics(telemetryLine)
@@ -512,6 +605,8 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func playIfReady(trigger: String) {
+        vlcIntendsToPlay = true
+        if isInteractiveSeeking { wasPlayingBeforeInteractiveSeek = true }
         guard player.media != nil else {
             MediaDiagnostics.playback("event=play_skipped mediaID=\(mediaID) playerID=\(playerID) trigger=\(trigger)")
             return
@@ -532,7 +627,7 @@ final class VideoPlayerViewModel: NSObject {
             return
         }
 #endif
-        playIfReady(trigger: "drawable_ready")
+        if vlcIntendsToPlay, !isInteractiveSeeking { playIfReady(trigger: "drawable_ready") }
     }
 
     func pausePlayback(trigger: String) {
@@ -543,6 +638,8 @@ final class VideoPlayerViewModel: NSObject {
             return
         }
 #endif
+        vlcIntendsToPlay = false
+        if isInteractiveSeeking { wasPlayingBeforeInteractiveSeek = false }
         player.pause()
     }
 
@@ -554,6 +651,8 @@ final class VideoPlayerViewModel: NSObject {
             return
         }
 #endif
+        vlcIntendsToPlay = false
+        if isInteractiveSeeking { wasPlayingBeforeInteractiveSeek = false }
         player.stop()
     }
 
@@ -585,6 +684,7 @@ final class VideoPlayerViewModel: NSObject {
         }
         tearDownAVPlayer()
 #endif
+        pendingVLCSeekSeconds = nil
         startupPlaybackPath = nil
         didFallbackToProxy = false
         didFallbackFromAVPlayer = false
@@ -593,10 +693,9 @@ final class VideoPlayerViewModel: NSObject {
         currentStartupStartPositionSeconds = 0
         interactiveSeekPreviewTask?.cancel()
         interactiveSeekPreviewTask = nil
-        scrubPreviewTask?.cancel()
-        scrubPreviewTask = nil
-        scrubPreviewImage = nil
+        stopScrubPreview()
         interactiveSeekDiagnosticsFinalizeTask?.cancel()
+        if interactiveSeekDiagnostics != nil { logInteractiveSeekDiagnosticsSummary(result: "cancelled") }
         interactiveSeekDiagnosticsFinalizeTask = nil
         interactiveSeekDiagnostics = nil
         pendingInteractiveSeekSeconds = nil
@@ -803,37 +902,38 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     private func wireAVController(_ controller: AVPlayerVideoController) {
-        controller.onTimeChanged = { [weak self] seconds in
-            guard let self else { return }
+        controller.onTimeChanged = { [weak self, weak controller] seconds in
+            guard let self, let controller, self.avController === controller, !self.isTearingDownPlayback else { return }
             self.currentPositionSeconds = seconds
             self.recordInteractiveSeekObservation(seconds: seconds)
             if seconds > 0 {
                 self.hasObservedPlayableTimeline = true
             }
         }
-        controller.onDurationChanged = { [weak self] duration in
-            self?.durationSeconds = duration
+        controller.onDurationChanged = { [weak self, weak controller] duration in
+            guard let self, let controller, self.avController === controller, !self.isTearingDownPlayback else { return }
+            self.durationSeconds = duration
         }
-        controller.onPresentationSizeChanged = { [weak self] size in
-            self?.resolutionText = VideoResolutionFormatter.text(
+        controller.onPresentationSizeChanged = { [weak self, weak controller] size in
+            guard let self, let controller, self.avController === controller, !self.isTearingDownPlayback else { return }
+            self.resolutionText = VideoResolutionFormatter.text(
                 width: size.width,
                 height: size.height
             )
         }
-        controller.onBufferingChanged = { [weak self] buffering in
-            guard let self else { return }
+        controller.onBufferingChanged = { [weak self, weak controller] buffering in
+            guard let self, let controller, self.avController === controller, !self.isTearingDownPlayback else { return }
             if buffering {
                 self.markInteractiveSeekBuffering()
             }
             self.updateAVBuffering(buffering)
         }
-        controller.onPlayingChanged = { [weak self] playing in
-            guard let self else { return }
+        controller.onPlayingChanged = { [weak self, weak controller] playing in
+            guard let self, let controller, self.avController === controller, !self.isTearingDownPlayback else { return }
             self.isPlaying = playing
+            self.finishInteractiveSeekDiagnosticsIfReached()
             if playing {
                 self.hasEverStartedPlaying = true
-                // 実際に再生が始まったら意図も再生中で確定する（初回自動再生・再開の両方を拾う）。
-                self.avIntendsToPlay = true
                 self.updateAVBuffering(false)
                 if !self.startupDidLogPlaying {
                     self.startupDidLogPlaying = true
@@ -841,6 +941,22 @@ final class VideoPlayerViewModel: NSObject {
                     self.finishStartupInterval(result: "av_player")
                 }
             }
+        }
+        controller.onScrubPreviewCompleted = { [weak self, weak controller] sessionID, requested, observed, finished, executionMs in
+            guard let self, let controller, self.avController === controller,
+                  !self.isTearingDownPlayback, self.isInteractiveSeeking,
+                  self.scrubPreviewState.sessionID == sessionID else { return }
+            self.scrubPreviewDiagnostics?.completedCount += 1
+            if !finished { self.scrubPreviewDiagnostics?.failureCount += 1 }
+            self.scrubPreviewDiagnostics?.totalExecutionMs += executionMs
+            if let maximum = self.scrubPreviewDiagnostics?.maxExecutionMs {
+                self.scrubPreviewDiagnostics?.maxExecutionMs = max(maximum, executionMs)
+            }
+            if self.scrubPreviewDiagnostics?.firstCompletedMs == nil,
+               let startedAt = self.scrubPreviewDiagnostics?.startedAt {
+                self.scrubPreviewDiagnostics?.firstCompletedMs = max(0, Int((ProcessInfo.processInfo.systemUptime - startedAt) * 1000))
+            }
+            self.scrubPreviewDiagnostics?.lastDeltaSeconds = abs(observed - requested)
         }
         controller.onFailed = { [weak self, weak controller] error in
             guard let self,
@@ -852,10 +968,7 @@ final class VideoPlayerViewModel: NSObject {
                 "event=avplayer_failed mediaID=\(self.mediaID) playerID=\(self.playerID) fallback=http_proxy \(errorCode)"
             )
             self.startAVPlayerFallback(
-                startPositionSeconds: max(
-                    self.currentPositionSeconds,
-                    controller.currentPositionSeconds
-                ),
+                startPositionSeconds: controller.fallbackPositionSeconds,
                 error: error,
                 reason: "runtime_failed"
             )
@@ -875,7 +988,9 @@ final class VideoPlayerViewModel: NSObject {
         }
 
         didFallbackFromAVPlayer = true
-        let shouldAutoplay = !hasEverStartedPlaying || avIntendsToPlay
+        let shouldAutoplay = avIntendsToPlay
+        vlcIntendsToPlay = shouldAutoplay
+        if isInteractiveSeeking { wasPlayingBeforeInteractiveSeek = shouldAutoplay }
         let errorCode = error.map(MediaDiagnostics.errorCode) ?? "domain=unknown code=0"
         MediaDiagnostics.playback(
             "event=avplayer_fallback_begin mediaID=\(mediaID) playerID=\(playerID) route=http_proxy reason=\(reason) startSeconds=\(startPositionSeconds) autoplay=\(shouldAutoplay) \(errorCode)"
@@ -887,15 +1002,17 @@ final class VideoPlayerViewModel: NSObject {
         currentPositionSeconds = startPositionSeconds
         startupPlaybackPath = .httpProxy
         setupTask = Task { [weak self] in
-            await self?.prepareHTTPProxyMedia(
+            guard let self else { return }
+            await self.prepareHTTPProxyMedia(
                 startPositionSeconds: startPositionSeconds,
-                autoplay: shouldAutoplay
+                autoplay: shouldAutoplay && !self.isInteractiveSeeking
             )
         }
     }
 
     private func tearDownAVPlayer() {
         guard avController != nil || avStreamClient != nil else { return }
+        stopScrubPreview()
         avBufferingDebounceTask?.cancel()
         avBufferingDebounceTask = nil
         avController?.tearDown()
@@ -986,6 +1103,8 @@ final class VideoPlayerViewModel: NSObject {
         startPositionSeconds: Double,
         autoplay: Bool
     ) {
+        let startPositionSeconds = pendingVLCSeekSeconds ?? startPositionSeconds
+        pendingVLCSeekSeconds = nil
         currentStartupStartPositionSeconds = startPositionSeconds
         hasObservedPlayableTimeline = false
         didLogStartupBufferingBeforeTimeline = false
@@ -1024,7 +1143,7 @@ final class VideoPlayerViewModel: NSObject {
             event: "media_attached",
             extra: "path: http_proxy_v2 | networkCaching: \(networkCaching) | fileCaching: \(fileCaching) | parse: network_timeout_10000 | startPosition: \(startPositionSeconds)"
         )
-        if isDrawableReady, autoplay {
+        if isDrawableReady, vlcIntendsToPlay, !isInteractiveSeeking {
             playIfReady(trigger: "http_proxy_ready")
         }
     }
@@ -1055,6 +1174,8 @@ final class VideoPlayerViewModel: NSObject {
         startPositionSeconds: Double,
         autoplay: Bool = true
     ) {
+        let startPositionSeconds = pendingVLCSeekSeconds ?? startPositionSeconds
+        pendingVLCSeekSeconds = nil
         currentStartupStartPositionSeconds = startPositionSeconds
         hasObservedPlayableTimeline = false
         didLogStartupBufferingBeforeTimeline = false
@@ -1103,7 +1224,7 @@ final class VideoPlayerViewModel: NSObject {
             event: "media_attached",
             extra: "path: direct_smb | networkCaching: \(networkCaching) | smbCaching: \(smbCaching) | fileCaching: \(smbCaching) | hwDecode: videotoolbox | parse: network_timeout_10000 | startPosition: \(startPositionSeconds) | startupRetry: \(directSMBStartupRetryCount)"
         )
-        if isDrawableReady, autoplay {
+        if isDrawableReady, vlcIntendsToPlay, !isInteractiveSeeking {
             playIfReady(trigger: "direct_smb_ready")
         }
     }

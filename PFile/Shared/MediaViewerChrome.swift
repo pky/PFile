@@ -742,10 +742,12 @@ struct MediaVideoScreen<Renderer: View>: View {
                         resolutionText: resolutionText,
                         pageText: pageText,
                         onSkipBackwardLong: {
+                            committedSeekPositionSeconds = nil
                             onSkipBackwardLong()
                             resetHideTimer()
                         },
                         onSkipBackwardShort: {
+                            committedSeekPositionSeconds = nil
                             onSkipBackwardShort()
                             resetHideTimer()
                         },
@@ -754,10 +756,12 @@ struct MediaVideoScreen<Renderer: View>: View {
                             resetHideTimer()
                         },
                         onSkipForwardShort: {
+                            committedSeekPositionSeconds = nil
                             onSkipForwardShort()
                             resetHideTimer()
                         },
                         onSkipForwardLong: {
+                            committedSeekPositionSeconds = nil
                             onSkipForwardLong()
                             resetHideTimer()
                         },
@@ -799,7 +803,8 @@ struct MediaVideoScreen<Renderer: View>: View {
             .contentShape(Rectangle())
             .onChange(of: currentPositionSeconds) { _, newValue in
                 guard let committed = committedSeekPositionSeconds else { return }
-                if abs(newValue - committed) < 0.5 {
+                // AVPlayerの近傍キーフレームへのシーク許容差と揃える。
+                if abs(newValue - committed) <= 1.1 {
                     committedSeekPositionSeconds = nil
                 }
             }

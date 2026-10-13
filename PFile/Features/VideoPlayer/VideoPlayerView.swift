@@ -107,15 +107,6 @@ struct VideoPlayerView: View {
                             viewModel.markDrawableReady()
                         }
                             .id(viewModel.playerID)
-                            .overlay {
-                                if let preview = viewModel.scrubPreviewImage {
-                                    Image(uiImage: preview)
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                        .background(Color.black)
-                                }
-                            }
                             .ignoresSafeArea()
                     } else {
                         VLCPlayerView(player: viewModel.player) {
