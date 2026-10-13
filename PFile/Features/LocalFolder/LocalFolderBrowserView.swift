@@ -5,6 +5,7 @@ import UIKit
 struct LocalFolderBrowserView: View {
     @Environment(\.appEnvironment) private var appEnvironment
     let source: LocalFolderSource
+    var isActive: Bool = true
     private let directRootURL: URL?
 
     @State private var rootURL: URL?
@@ -14,9 +15,15 @@ struct LocalFolderBrowserView: View {
     @State private var errorMessage: String?
     @State private var hasRestoredNavigationPath = false
     @State private var cachedViewModels: [String: LocalFolderBrowserViewModel] = [:]
+    @State private var orientationContextID = UUID()
 
-    init(source: LocalFolderSource, directRootURL: URL? = nil) {
+    init(
+        source: LocalFolderSource,
+        isActive: Bool = true,
+        directRootURL: URL? = nil
+    ) {
         self.source = source
+        self.isActive = isActive
         self.directRootURL = directRootURL
     }
 
@@ -68,9 +75,21 @@ struct LocalFolderBrowserView: View {
             hasRestoredNavigationPath = true
         }
         .onDisappear {
+            OrientationService.shared.deactivate(contextID: orientationContextID)
             if isAccessing, let rootURL {
                 rootURL.stopAccessingSecurityScopedResource()
                 isAccessing = false
+            }
+        }
+        .onAppear {
+            guard isActive else { return }
+            OrientationService.shared.activate(.localFolder, contextID: orientationContextID)
+        }
+        .onChange(of: isActive) { _, newValue in
+            if newValue {
+                OrientationService.shared.activate(.localFolder, contextID: orientationContextID)
+            } else {
+                OrientationService.shared.deactivate(contextID: orientationContextID)
             }
         }
         .fullScreenCover(item: $selectedRoute) { route in
@@ -929,6 +948,7 @@ struct LocalVideoPlayerView: View {
             canNavigateForward: currentIndex < items.index(before: items.endIndex),
             errorMessage: controller.errorMessage,
             shareURL: currentItem.map { URL(fileURLWithPath: $0.path) },
+            orientationScope: .localFolder,
             onClose: {
                 await saveWatchHistory()
                 controller.stop()

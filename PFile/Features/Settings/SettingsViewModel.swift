@@ -49,12 +49,16 @@ final class SettingsViewModel {
         }
     }
 
-    var documentOrientationMode: OrientationMode = .system {
-        didSet { OrientationService.shared.setDocumentMode(documentOrientationMode) }
+    var remoteOrientationMode: OrientationMode = .system {
+        didSet { OrientationService.shared.setMode(remoteOrientationMode, for: .remote) }
     }
 
-    var videoOrientationMode: OrientationMode = .system {
-        didSet { OrientationService.shared.setVideoMode(videoOrientationMode) }
+    var localFolderOrientationMode: OrientationMode = .system {
+        didSet { OrientationService.shared.setMode(localFolderOrientationMode, for: .localFolder) }
+    }
+
+    var photoLibraryOrientationMode: OrientationMode = .system {
+        didSet { OrientationService.shared.setMode(photoLibraryOrientationMode, for: .photoLibrary) }
     }
 
     // MARK: - State
@@ -125,8 +129,9 @@ final class SettingsViewModel {
         if let limit = defaults.object(forKey: WatchHistoryLimitSettings.key) as? Int {
             watchHistoryLimit = limit
         }
-        documentOrientationMode = OrientationService.shared.documentMode
-        videoOrientationMode = OrientationService.shared.videoMode
+        remoteOrientationMode = OrientationService.shared.remoteMode
+        localFolderOrientationMode = OrientationService.shared.localFolderMode
+        photoLibraryOrientationMode = OrientationService.shared.photoLibraryMode
     }
 
     // MARK: - Actions

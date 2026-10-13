@@ -250,18 +250,27 @@ struct SettingsView: View {
                 set: { viewModel.showVideoClock = $0 }
             ))
 
-            Picker("書類の画面の向き", selection: Binding(
-                get: { viewModel.documentOrientationMode },
-                set: { viewModel.documentOrientationMode = $0 }
+            Picker("NASの画面の向き", selection: Binding(
+                get: { viewModel.remoteOrientationMode },
+                set: { viewModel.remoteOrientationMode = $0 }
             )) {
                 ForEach(OrientationMode.allCases, id: \.self) { mode in
                     Text(mode.displayName).tag(mode)
                 }
             }
 
-            Picker("動画の画面の向き", selection: Binding(
-                get: { viewModel.videoOrientationMode },
-                set: { viewModel.videoOrientationMode = $0 }
+            Picker("ローカル・iCloud Driveの画面の向き", selection: Binding(
+                get: { viewModel.localFolderOrientationMode },
+                set: { viewModel.localFolderOrientationMode = $0 }
+            )) {
+                ForEach(OrientationMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+
+            Picker("フォトライブラリの画面の向き", selection: Binding(
+                get: { viewModel.photoLibraryOrientationMode },
+                set: { viewModel.photoLibraryOrientationMode = $0 }
             )) {
                 ForEach(OrientationMode.allCases, id: \.self) { mode in
                     Text(mode.displayName).tag(mode)

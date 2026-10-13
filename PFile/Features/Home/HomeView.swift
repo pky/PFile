@@ -840,14 +840,14 @@ struct HomeView: View {
                         if sourceID == Self.simulatorVideosSourceID {
                             simulatorVideosBrowserView
                         } else if let source = localFoldersViewModel?.sources.first(where: { $0.id == sourceID }) {
-                            LocalFolderBrowserView(source: source)
+                            LocalFolderBrowserView(source: source, isActive: selectedTab == .browse)
                                 .id(source.id)
                         } else {
                             ContentUnavailableView("ローカルフォルダを選択", systemImage: "internaldrive")
                         }
 #else
                         if let source = localFoldersViewModel?.sources.first(where: { $0.id == sourceID }) {
-                            LocalFolderBrowserView(source: source)
+                            LocalFolderBrowserView(source: source, isActive: selectedTab == .browse)
                                 .id(source.id)
                         } else {
                             ContentUnavailableView("ローカルフォルダを選択", systemImage: "internaldrive")

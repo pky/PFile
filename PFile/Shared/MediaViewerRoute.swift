@@ -266,6 +266,19 @@ struct MediaViewerContainerView: View {
     let route: MediaViewerRoute
     var onReturnHome: (() async -> Void)? = nil
 
+    @State private var orientationContextID = UUID()
+
+    private var orientationScope: OrientationScope {
+        switch route.source {
+        case .remote:
+            return .remote
+        case .localFolder:
+            return .localFolder
+        case .photoLibrary:
+            return .photoLibrary
+        }
+    }
+
     var body: some View {
         Group {
             switch route.source {
@@ -339,18 +352,10 @@ struct MediaViewerContainerView: View {
             }
         }
         .onAppear {
-            if route.initialItem.isPDF {
-                OrientationService.shared.activate(.document)
-            } else if route.initialItem.isVideo {
-                OrientationService.shared.activate(.video)
-            }
+            OrientationService.shared.activate(orientationScope, contextID: orientationContextID)
         }
         .onDisappear {
-            if route.initialItem.isPDF {
-                OrientationService.shared.deactivate(.document)
-            } else if route.initialItem.isVideo {
-                OrientationService.shared.deactivate(.video)
-            }
+            OrientationService.shared.deactivate(contextID: orientationContextID)
         }
     }
 }

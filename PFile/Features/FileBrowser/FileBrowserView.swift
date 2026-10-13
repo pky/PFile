@@ -15,6 +15,7 @@ struct FileBrowserView: View {
     @State private var hasRestoredNavigationPath = false
     @State private var cachedViewModels: [String: FileBrowserViewModel] = [:]
     @State private var didEnterBackground = false
+    @State private var orientationContextID = UUID()
 
     private var source: ContentSource {
         .remote(connection.id)
@@ -58,10 +59,26 @@ struct FileBrowserView: View {
         }
         .onChange(of: isActive) { _, newValue in
             if newValue {
+                OrientationService.shared.activate(.remote, contextID: orientationContextID)
                 let currentPath = navigationPath.last ?? connection.startPath
                 cachedViewModels[currentPath]?.resumeNetworkWork()
             } else {
+                OrientationService.shared.deactivate(contextID: orientationContextID)
                 cachedViewModels.values.forEach { $0.prepareForBackground() }
+            }
+        }
+        .onAppear {
+            guard isActive else { return }
+            OrientationService.shared.activate(.remote, contextID: orientationContextID)
+        }
+        .onDisappear {
+            OrientationService.shared.deactivate(contextID: orientationContextID)
+        }
+        .onChange(of: isActive) { _, newValue in
+            if newValue {
+                OrientationService.shared.activate(.remote, contextID: orientationContextID)
+            } else {
+                OrientationService.shared.deactivate(contextID: orientationContextID)
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -107,6 +124,7 @@ private struct DirectoryContentView: View {
     @State private var showAddToListSheet = false
     @State private var showSearchSheet = false
     @State private var thumbnailChoiceItem: DirectoryItem?
+    @State private var orientationContextID = UUID()
 
     var body: some View {
         Group {
@@ -220,6 +238,13 @@ private struct DirectoryContentView: View {
             if let viewModel, viewModel.isSelectMode {
                 selectModeBottomBar(viewModel: viewModel)
             }
+        }
+        .onAppear {
+            guard isActive else { return }
+            OrientationService.shared.activate(.remote, contextID: orientationContextID)
+        }
+        .onDisappear {
+            OrientationService.shared.deactivate(contextID: orientationContextID)
         }
     }
 

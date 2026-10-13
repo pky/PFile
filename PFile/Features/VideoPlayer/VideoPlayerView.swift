@@ -54,6 +54,7 @@ struct VideoPlayerView: View {
                     canNavigateBackward: currentIndex > items.startIndex,
                     canNavigateForward: currentIndex < items.index(before: items.endIndex),
                     errorMessage: viewModel.errorMessage,
+                    orientationScope: .remote,
                     onClose: {
                         dismiss()
                         viewModel.cancelSetup()

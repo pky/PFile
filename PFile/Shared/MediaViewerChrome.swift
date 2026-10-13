@@ -607,6 +607,7 @@ struct MediaVideoScreen<Renderer: View>: View {
     let canNavigateForward: Bool
     let errorMessage: String?
     let shareURL: URL?
+    let orientationScope: OrientationScope?
     let onClose: () async -> Void
     let onReturnHome: (() async -> Void)?
     let onAddToList: (() -> Void)?
@@ -628,7 +629,7 @@ struct MediaVideoScreen<Renderer: View>: View {
     @State private var scrubPositionSeconds: Double = 0
     @State private var committedSeekPositionSeconds: Double?
     @State private var slideOffsetX: CGFloat = 0
-    @State private var orientationMode = OrientationService.shared.videoMode
+    @State private var orientationMode: OrientationMode
     @AppStorage(VideoPlayerHomeButtonSettings.key) private var showHomeButtonAlways = VideoPlayerHomeButtonSettings.defaultValue
     @AppStorage(VideoPlayerShareButtonSettings.key) private var showShareButton = VideoPlayerShareButtonSettings.defaultValue
     @AppStorage(VideoPlayerAirPlayButtonSettings.key) private var showAirPlayButton = VideoPlayerAirPlayButtonSettings.defaultValue
@@ -647,6 +648,7 @@ struct MediaVideoScreen<Renderer: View>: View {
         canNavigateForward: Bool,
         errorMessage: String?,
         shareURL: URL? = nil,
+        orientationScope: OrientationScope? = nil,
         onClose: @escaping () async -> Void,
         onReturnHome: (() async -> Void)? = nil,
         onAddToList: (() -> Void)?,
@@ -674,6 +676,7 @@ struct MediaVideoScreen<Renderer: View>: View {
         self.canNavigateForward = canNavigateForward
         self.errorMessage = errorMessage
         self.shareURL = shareURL
+        self.orientationScope = orientationScope
         self.onClose = onClose
         self.onReturnHome = onReturnHome
         self.onAddToList = onAddToList
@@ -688,6 +691,9 @@ struct MediaVideoScreen<Renderer: View>: View {
         self.onSeekEnded = onSeekEnded
         self.onToggleMute = onToggleMute
         self.renderer = renderer()
+        self._orientationMode = State(
+            initialValue: orientationScope.map { OrientationService.shared.mode(for: $0) } ?? .system
+        )
     }
 
     var body: some View {
@@ -733,10 +739,12 @@ struct MediaVideoScreen<Renderer: View>: View {
                         title: title,
                         onClose: closePlayer,
                         onReturnHome: onReturnHome == nil ? nil : returnHome,
-                        orientationLabel: orientationLabel,
-                        onOrientationToggle: {
-                            cycleOrientationMode()
-                            resetHideTimer()
+                        orientationLabel: orientationScope == nil ? nil : orientationLabel,
+                        onOrientationToggle: orientationScope.map { scope in
+                            {
+                                cycleOrientationMode(for: scope)
+                                resetHideTimer()
+                            }
                         },
                         onAddToList: onAddToList,
                         shareURL: effectiveShareURL,
@@ -840,7 +848,7 @@ struct MediaVideoScreen<Renderer: View>: View {
                     }
             )
             .onAppear {
-                orientationMode = OrientationService.shared.videoMode
+                orientationMode = orientationScope.map { OrientationService.shared.mode(for: $0) } ?? .system
                 if isPlaying {
                     resetHideTimer()
                 }
@@ -927,7 +935,7 @@ struct MediaVideoScreen<Renderer: View>: View {
         }
     }
 
-    private func cycleOrientationMode() {
+    private func cycleOrientationMode(for scope: OrientationScope) {
         let nextMode: OrientationMode
         switch orientationMode {
         case .portrait:
@@ -938,7 +946,7 @@ struct MediaVideoScreen<Renderer: View>: View {
             nextMode = .portrait
         }
         orientationMode = nextMode
-        OrientationService.shared.setVideoMode(nextMode)
+        OrientationService.shared.setMode(nextMode, for: scope)
     }
 
     private func formatTime(_ seconds: Double) -> String {

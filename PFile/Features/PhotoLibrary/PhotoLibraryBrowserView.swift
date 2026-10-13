@@ -10,6 +10,7 @@ struct PhotoLibraryBrowserView: View {
     @State private var viewModel = PhotoLibraryBrowserViewModel()
     @State private var selectedRoute: MediaViewerRoute?
     @State private var showAddToListSheet = false
+    @State private var orientationContextID = UUID()
 
     var body: some View {
         Group {
@@ -36,10 +37,21 @@ struct PhotoLibraryBrowserView: View {
             await viewModel.prepare()
         }
         .onChange(of: isActive) { _, newValue in
-            guard newValue else { return }
-            Task {
-                await viewModel.prepare()
+            if newValue {
+                OrientationService.shared.activate(.photoLibrary, contextID: orientationContextID)
+                Task {
+                    await viewModel.prepare()
+                }
+            } else {
+                OrientationService.shared.deactivate(contextID: orientationContextID)
             }
+        }
+        .onAppear {
+            guard isActive else { return }
+            OrientationService.shared.activate(.photoLibrary, contextID: orientationContextID)
+        }
+        .onDisappear {
+            OrientationService.shared.deactivate(contextID: orientationContextID)
         }
         .onChange(of: scenePhase) { _, newValue in
             guard newValue == .active, isActive else { return }
@@ -722,6 +734,7 @@ struct PhotoLibraryMediaViewerView: View {
                     canNavigateBackward: canNavigateBackward,
                     canNavigateForward: canNavigateForward,
                     errorMessage: errorMessage,
+                    orientationScope: .photoLibrary,
                     onClose: {
                         await saveWatchHistory()
                         player?.pause()

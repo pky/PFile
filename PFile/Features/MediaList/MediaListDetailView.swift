@@ -15,6 +15,7 @@ struct MediaListDetailView: View {
     @State private var editMode: EditMode = .inactive
     @State private var selectedFileIDs: Set<UUID> = []
     @State private var thumbnailChoiceFile: MediaFile?
+    @State private var orientationContextID = UUID()
 
     var body: some View {
         Group {
@@ -48,6 +49,7 @@ struct MediaListDetailView: View {
         .task(id: isActive) {
             guard isActive else { return }
             await loadWhenActivated()
+            updateOrientationScope()
         }
         .alert("名前を変更", isPresented: $showRenameAlert) {
             TextField("リスト名", text: $renameText)
@@ -93,6 +95,7 @@ struct MediaListDetailView: View {
         }
         .onChange(of: viewModel?.files.map(\.id) ?? []) { _, newIDs in
             selectedFileIDs = selectedFileIDs.intersection(Set(newIDs))
+            updateOrientationScope()
         }
         .onChange(of: viewModel?.sortKey) { _, _ in
             viewModel?.applySortChange()
@@ -103,6 +106,35 @@ struct MediaListDetailView: View {
         .onChange(of: viewModel?.dateDisplayMode) { _, _ in
             viewModel?.applySortChange()
         }
+        .onAppear {
+            updateOrientationScope()
+        }
+        .onDisappear {
+            OrientationService.shared.deactivate(contextID: orientationContextID)
+        }
+        .onChange(of: isActive) { _, _ in
+            updateOrientationScope()
+        }
+    }
+
+    private func updateOrientationScope() {
+        guard isActive,
+              let files = viewModel?.files,
+              !files.isEmpty else {
+            OrientationService.shared.deactivate(contextID: orientationContextID)
+            return
+        }
+
+        let scopes = Set(files.map { file in
+            OrientationScope(
+                source: ContentSource.from(id: file.sourceID) ?? .remote(file.connectionId)
+            )
+        })
+        guard scopes.count == 1, let scope = scopes.first else {
+            OrientationService.shared.deactivate(contextID: orientationContextID)
+            return
+        }
+        OrientationService.shared.activate(scope, contextID: orientationContextID)
     }
 
     // MARK: - Toolbar

@@ -24,9 +24,21 @@ enum OrientationMode: String, CaseIterable {
     }
 }
 
-enum OrientationContent {
-    case document
-    case video
+enum OrientationScope: Hashable {
+    case remote
+    case localFolder
+    case photoLibrary
+
+    init(source: ContentSource) {
+        switch source {
+        case .remote:
+            self = .remote
+        case .localFolder:
+            self = .localFolder
+        case .photoLibrary:
+            self = .photoLibrary
+        }
+    }
 }
 
 // MARK: - OrientationService
@@ -36,65 +48,86 @@ final class OrientationService {
     static let shared = OrientationService()
 
     private static let legacyKey = "Settings.orientationMode"
-    private static let documentKey = "Settings.documentOrientationMode"
-    private static let videoKey = "Settings.videoOrientationMode"
+    private static let remoteKey = "Settings.remoteOrientationMode"
+    private static let localFolderKey = "Settings.localFolderOrientationMode"
+    private static let photoLibraryKey = "Settings.photoLibraryOrientationMode"
+    private static let documentLegacyKey = "Settings.documentOrientationMode"
+    private static let videoLegacyKey = "Settings.videoOrientationMode"
 
-    private(set) var documentMode: OrientationMode = .system {
+    private(set) var remoteMode: OrientationMode = .system {
         didSet {
-            UserDefaults.standard.set(documentMode.rawValue, forKey: Self.documentKey)
+            UserDefaults.standard.set(remoteMode.rawValue, forKey: Self.remoteKey)
         }
     }
 
-    private(set) var videoMode: OrientationMode = .system {
+    private(set) var localFolderMode: OrientationMode = .system {
         didSet {
-            UserDefaults.standard.set(videoMode.rawValue, forKey: Self.videoKey)
+            UserDefaults.standard.set(localFolderMode.rawValue, forKey: Self.localFolderKey)
         }
     }
 
-    private var activeContent: OrientationContent?
+    private(set) var photoLibraryMode: OrientationMode = .system {
+        didSet {
+            UserDefaults.standard.set(photoLibraryMode.rawValue, forKey: Self.photoLibraryKey)
+        }
+    }
+
+    private var activeScopes: [UUID: OrientationScope] = [:]
+    private var scopeOrder: [UUID] = []
 
     var mode: OrientationMode {
-        mode(for: activeContent)
+        scopeOrder.last.flatMap { activeScopes[$0] }.map(mode(for:)) ?? .system
     }
 
     private init() {
-        let legacyMode = UserDefaults.standard.string(forKey: Self.legacyKey)
+        let defaults = UserDefaults.standard
+        let legacyMode = defaults.string(forKey: Self.legacyKey)
             .flatMap(OrientationMode.init(rawValue:)) ?? .system
-        documentMode = UserDefaults.standard.string(forKey: Self.documentKey)
+        let documentLegacyMode = defaults.string(forKey: Self.documentLegacyKey)
             .flatMap(OrientationMode.init(rawValue:)) ?? legacyMode
-        videoMode = UserDefaults.standard.string(forKey: Self.videoKey)
+        let videoLegacyMode = defaults.string(forKey: Self.videoLegacyKey)
             .flatMap(OrientationMode.init(rawValue:)) ?? legacyMode
+        remoteMode = defaults.string(forKey: Self.remoteKey)
+            .flatMap(OrientationMode.init(rawValue:)) ?? videoLegacyMode
+        localFolderMode = defaults.string(forKey: Self.localFolderKey)
+            .flatMap(OrientationMode.init(rawValue:)) ?? documentLegacyMode
+        photoLibraryMode = defaults.string(forKey: Self.photoLibraryKey)
+            .flatMap(OrientationMode.init(rawValue:)) ?? .system
     }
 
-    func setDocumentMode(_ newMode: OrientationMode) {
-        documentMode = newMode
+    func setMode(_ newMode: OrientationMode, for scope: OrientationScope) {
+        switch scope {
+        case .remote:
+            remoteMode = newMode
+        case .localFolder:
+            localFolderMode = newMode
+        case .photoLibrary:
+            photoLibraryMode = newMode
+        }
         applyOrientationAfterViewUpdate()
     }
 
-    func setVideoMode(_ newMode: OrientationMode) {
-        videoMode = newMode
+    func activate(_ scope: OrientationScope, contextID: UUID) {
+        activeScopes[contextID] = scope
+        scopeOrder.removeAll { $0 == contextID }
+        scopeOrder.append(contextID)
         applyOrientationAfterViewUpdate()
     }
 
-    func activate(_ content: OrientationContent) {
-        activeContent = content
+    func deactivate(contextID: UUID) {
+        activeScopes[contextID] = nil
+        scopeOrder.removeAll { $0 == contextID }
         applyOrientationAfterViewUpdate()
     }
 
-    func deactivate(_ content: OrientationContent) {
-        guard activeContent == content else { return }
-        activeContent = nil
-        applyOrientationAfterViewUpdate()
-    }
-
-    private func mode(for content: OrientationContent?) -> OrientationMode {
-        switch content {
-        case .document:
-            return documentMode
-        case .video:
-            return videoMode
-        case nil:
-            return .system
+    func mode(for scope: OrientationScope) -> OrientationMode {
+        switch scope {
+        case .remote:
+            return remoteMode
+        case .localFolder:
+            return localFolderMode
+        case .photoLibrary:
+            return photoLibraryMode
         }
     }
 
