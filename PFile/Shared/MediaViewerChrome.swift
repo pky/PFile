@@ -108,6 +108,7 @@ struct MediaViewerTopBar: View {
     let title: String
     let onClose: () -> Void
     let onReturnHome: (() -> Void)?
+    let onControlsToggle: (() -> Void)?
     let orientationLabel: String?
     let onOrientationToggle: (() -> Void)?
     let onAddToList: (() -> Void)?
@@ -119,6 +120,7 @@ struct MediaViewerTopBar: View {
         title: String,
         onClose: @escaping () -> Void,
         onReturnHome: (() -> Void)? = nil,
+        onControlsToggle: (() -> Void)? = nil,
         orientationLabel: String? = nil,
         onOrientationToggle: (() -> Void)? = nil,
         onAddToList: (() -> Void)? = nil,
@@ -129,6 +131,7 @@ struct MediaViewerTopBar: View {
         self.title = title
         self.onClose = onClose
         self.onReturnHome = onReturnHome
+        self.onControlsToggle = onControlsToggle
         self.orientationLabel = orientationLabel
         self.onOrientationToggle = onOrientationToggle
         self.onAddToList = onAddToList
@@ -157,6 +160,13 @@ struct MediaViewerTopBar: View {
                 .padding(.top, 8)
 
             HStack(spacing: 8) {
+                if let onControlsToggle {
+                    MediaViewerLabeledButton(
+                        systemImage: "list.bullet",
+                        text: "ページ",
+                        action: onControlsToggle
+                    )
+                }
                 if let orientationLabel,
                    let onOrientationToggle {
                     MediaViewerLabeledButton(
@@ -174,7 +184,10 @@ struct MediaViewerTopBar: View {
                 if showAirPlayButton {
                     MediaViewerAirPlayButton()
                         .frame(width: 44, height: 44)
-                } else if orientationLabel == nil && onAddToList == nil && shareURL == nil {
+                } else if onControlsToggle == nil,
+                          orientationLabel == nil,
+                          onAddToList == nil,
+                          shareURL == nil {
                     Color.clear
                         .frame(width: 44, height: 44)
                 }
