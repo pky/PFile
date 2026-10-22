@@ -342,8 +342,8 @@ final class VideoPlayerViewModel: NSObject {
         pendingInteractiveSeekSeconds = clamped
         if !isInteractiveSeeking {
             isInteractiveSeeking = true
-            // drag 中は音と映像がずれるので再生を止め、指を離したときに元の状態へ戻す。
-            // AVPlayer は buffering で isPlaying が揺れるため、安定した再生意図で判定する。
+            // drag 中は音と映像がずれるので AVPlayer は再生を止め、VLC は消音で再生を続ける。
+            // 指を離したときに元の状態へ戻す。AVPlayer は buffering で isPlaying が揺れるため、安定した再生意図で判定する。
 #if !targetEnvironment(simulator)
             wasPlayingBeforeInteractiveSeek = usesAVPlayer ? avIntendsToPlay : isPlaying
 #else
@@ -396,11 +396,11 @@ final class VideoPlayerViewModel: NSObject {
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
             avController?.endInteractiveSeek()
-        } else if wasPlayingBeforeInteractiveSeek {
-            resumeAfterInteractiveSeek()
+        } else {
+            finishVLCInteractiveSeek()
         }
 #else
-        if wasPlayingBeforeInteractiveSeek { resumeAfterInteractiveSeek() }
+        finishVLCInteractiveSeek()
 #endif
         wasPlayingBeforeInteractiveSeek = false
         finalizeInteractiveSeekDiagnosticsAfterDelay()
@@ -413,7 +413,21 @@ final class VideoPlayerViewModel: NSObject {
             return
         }
 #endif
-        player.pause()
+        // VLC は一時停止中に seek しても新しいフレームも時刻通知も出さない。
+        // ドラッグ中は音を消したまま再生を続け、seek 後のフレームで追従させる。
+        player.audio?.isMuted = true
+        if !player.isPlaying {
+            player.play()
+        }
+    }
+
+    private func finishVLCInteractiveSeek() {
+        player.audio?.isMuted = isMuted
+        if wasPlayingBeforeInteractiveSeek {
+            resumeAfterInteractiveSeek()
+        } else {
+            player.pause()
+        }
     }
 
     private func resumeAfterInteractiveSeek() {
