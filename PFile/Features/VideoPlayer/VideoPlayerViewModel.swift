@@ -85,6 +85,9 @@ final class VideoPlayerViewModel: NSObject {
     private var vlcScrubSeekIssuedAt: TimeInterval = 0
     private var vlcScrubTimeoutTask: Task<Void, Never>?
     private var vlcScrubSeekTracker: VLCSeekCompletionPolicy.Tracker?
+    private var vlcDeferredPauseTracker: VLCSeekCompletionPolicy.Tracker?
+    private var vlcDeferredPauseTask: Task<Void, Never>?
+    var isVLCDeferredPausePending: Bool { vlcDeferredPauseTracker != nil }
 
     private struct ScrubPreviewDiagnostics {
         let startedAt: TimeInterval
@@ -343,12 +346,15 @@ final class VideoPlayerViewModel: NSObject {
         pendingInteractiveSeekSeconds = clamped
         if !isInteractiveSeeking {
             isInteractiveSeeking = true
+            // 前回のドラッグの pause 遅延中は消音再生が続いているが、ユーザーの意図は停止のまま。
+            let wasDeferringPause = isVLCDeferredPausePending
+            cancelVLCDeferredPause()
             // drag 中は音と映像がずれるので AVPlayer は再生を止め、VLC は消音で再生を続ける。
             // 指を離したときに元の状態へ戻す。AVPlayer は buffering で isPlaying が揺れるため、安定した再生意図で判定する。
 #if !targetEnvironment(simulator)
-            wasPlayingBeforeInteractiveSeek = usesAVPlayer ? avIntendsToPlay : isPlaying
+            wasPlayingBeforeInteractiveSeek = usesAVPlayer ? avIntendsToPlay : (isPlaying && !wasDeferringPause)
 #else
-            wasPlayingBeforeInteractiveSeek = isPlaying
+            wasPlayingBeforeInteractiveSeek = isPlaying && !wasDeferringPause
 #endif
             pauseForInteractiveSeek()
             beginInteractiveSeekDiagnostics(startedSeconds: clamped)
@@ -382,10 +388,12 @@ final class VideoPlayerViewModel: NSObject {
     func endInteractiveSeek() {
         guard isInteractiveSeeking else { return }
         stopScrubPreview()
+        var finalSeekSeconds: Double?
         if let pendingInteractiveSeekSeconds {
             recordInteractiveSeekRequest(seconds: pendingInteractiveSeekSeconds)
             interactiveSeekDiagnostics?.finalRequestedSeconds = pendingInteractiveSeekSeconds
             seek(to: pendingInteractiveSeekSeconds)
+            finalSeekSeconds = pendingInteractiveSeekSeconds
         }
 #if !targetEnvironment(simulator)
         interactiveSeekDiagnostics?.shouldResume = usesAVPlayer ? avIntendsToPlay : wasPlayingBeforeInteractiveSeek
@@ -398,10 +406,10 @@ final class VideoPlayerViewModel: NSObject {
         if usesAVPlayer {
             avController?.endInteractiveSeek()
         } else {
-            finishVLCInteractiveSeek()
+            finishVLCInteractiveSeek(finalSeekSeconds: finalSeekSeconds)
         }
 #else
-        finishVLCInteractiveSeek()
+        finishVLCInteractiveSeek(finalSeekSeconds: finalSeekSeconds)
 #endif
         wasPlayingBeforeInteractiveSeek = false
         finalizeInteractiveSeekDiagnosticsAfterDelay()
@@ -422,13 +430,47 @@ final class VideoPlayerViewModel: NSObject {
         }
     }
 
-    private func finishVLCInteractiveSeek() {
-        player.audio?.isMuted = isMuted
+    private func finishVLCInteractiveSeek(finalSeekSeconds: Double?) {
         if wasPlayingBeforeInteractiveSeek {
+            player.audio?.isMuted = isMuted
             resumeAfterInteractiveSeek()
-        } else {
-            player.pause()
+            return
         }
+        // VLC は pause 後に seek してもフレームを出さない。確定 seek を出した直後に pause すると
+        // 表示が最後のプレビュー位置で止まるので、seek 完了（エコー観測後の進行）か打ち切りまで消音再生を続ける。
+        guard let finalSeekSeconds, player.media != nil else {
+            player.audio?.isMuted = isMuted
+            player.pause()
+            return
+        }
+        beginVLCDeferredPause(target: finalSeekSeconds)
+    }
+
+    private func beginVLCDeferredPause(target: Double) {
+        cancelVLCDeferredPause()
+        vlcDeferredPauseTracker = VLCSeekCompletionPolicy.Tracker(target: target)
+        vlcDeferredPauseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(VLCSeekCompletionPolicy.timeoutSeconds))
+            guard !Task.isCancelled, let self, self.isVLCDeferredPausePending else { return }
+            self.completeVLCDeferredPause()
+        }
+    }
+
+    private func observeVLCDeferredPauseProgress(observedSeconds: Double) {
+        guard vlcDeferredPauseTracker?.observe(observedSeconds) == true else { return }
+        completeVLCDeferredPause()
+    }
+
+    private func completeVLCDeferredPause() {
+        cancelVLCDeferredPause()
+        player.audio?.isMuted = isMuted
+        player.pause()
+    }
+
+    private func cancelVLCDeferredPause() {
+        vlcDeferredPauseTask?.cancel()
+        vlcDeferredPauseTask = nil
+        vlcDeferredPauseTracker = nil
     }
 
     private func resumeAfterInteractiveSeek() {
@@ -515,6 +557,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     private func stopVLCScrubSeek() {
+        cancelVLCDeferredPause()
         vlcScrubSeekTracker = nil
         vlcScrubTimeoutTask?.cancel()
         vlcScrubTimeoutTask = nil
@@ -732,6 +775,10 @@ final class VideoPlayerViewModel: NSObject {
         }
         logStartupDiag(event: "play_requested", extra: "trigger: \(trigger)")
         MediaDiagnostics.playback("event=play mediaID=\(mediaID) playerID=\(playerID) trigger=\(trigger)")
+        if isVLCDeferredPausePending {
+            cancelVLCDeferredPause()
+            player.audio?.isMuted = isMuted
+        }
         player.play()
     }
 
@@ -756,6 +803,10 @@ final class VideoPlayerViewModel: NSObject {
 #endif
         vlcIntendsToPlay = false
         if isInteractiveSeeking { wasPlayingBeforeInteractiveSeek = false }
+        if isVLCDeferredPausePending {
+            cancelVLCDeferredPause()
+            player.audio?.isMuted = isMuted
+        }
         player.pause()
     }
 
@@ -769,6 +820,10 @@ final class VideoPlayerViewModel: NSObject {
 #endif
         vlcIntendsToPlay = false
         if isInteractiveSeeking { wasPlayingBeforeInteractiveSeek = false }
+        if isVLCDeferredPausePending {
+            cancelVLCDeferredPause()
+            player.audio?.isMuted = isMuted
+        }
         player.stop()
     }
 
@@ -1702,6 +1757,7 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
         currentPositionSeconds = Double(ms) / 1000.0
         recordInteractiveSeekObservation(seconds: currentPositionSeconds)
         observeVLCScrubSeekProgress(observedSeconds: currentPositionSeconds)
+        observeVLCDeferredPauseProgress(observedSeconds: currentPositionSeconds)
 
         if let previousMs,
            ms > previousMs,
