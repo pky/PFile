@@ -36,6 +36,21 @@ struct VideoPlayerInteractiveSeekPolicy {
     static let minimumPreviewDeltaSeconds = 0.25
 }
 
+/// 再生エンジンの振り分け方針。
+/// AVPlayer 経路は特定の HEVC MP4 で表示がカクつき（iOS 側の統計では検出できない）、
+/// VLC 経路は NAS 上の重い動画でも軽く再生できたため、MP4 系も VLC に委ねる。
+/// AVPlayer 経路の実装は残しており、この定数を true に戻せば再び有効になる。
+struct VideoPlayerEnginePolicy {
+    static let avPlayerEnabledForMP4Family = false
+    private static let mp4FamilyExtensions: Set<String> = ["mp4", "m4v", "mov"]
+
+    static func usesAVPlayer(fileName: String) -> Bool {
+        guard avPlayerEnabledForMP4Family else { return false }
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        return mp4FamilyExtensions.contains(ext)
+    }
+}
+
 @Observable
 final class VideoPlayerViewModel: NSObject {
 
@@ -1447,10 +1462,9 @@ final class VideoPlayerViewModel: NSObject {
         return components.url
     }
 
-    /// AVPlayer + ResourceLoader で再生する形式かどうか。MP4 系は AVPlayer、その他は VLC に委ねる。
+    /// AVPlayer + ResourceLoader で再生する形式かどうか。振り分けは VideoPlayerEnginePolicy に従う。
     private static func isAVPlayerEligible(_ item: DirectoryItem) -> Bool {
-        let ext = (item.name as NSString).pathExtension.lowercased()
-        return ["mp4", "m4v", "mov"].contains(ext)
+        VideoPlayerEnginePolicy.usesAVPlayer(fileName: item.name)
     }
 
     private static func avContentType(for item: DirectoryItem) -> String {

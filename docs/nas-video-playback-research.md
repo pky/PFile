@@ -1,6 +1,6 @@
 # NAS 動画再生方式調査
 
-> 注記：これは調査段階のメモです。最終的な実装はこのドキュメントの結論と異なります。MP4/MOV系はAVPlayer（SMBResourceLoaderDelegate + AMSMB2によるバイト範囲読み込み）で再生し、VLCKitはMKVなど非対応フォーマットのフォールバックとして使用しています。
+> 注記：これは調査段階のメモです。現在の実装は、MP4/MOV系を含むすべての動画を MobileVLCKit の direct SMB 経路で再生します。AVPlayer（SMBResourceLoaderDelegate + AMSMB2によるバイト範囲読み込み）経路の実装は残っていますが、特定の HEVC MP4 で表示がカクつくため VideoPlayerEnginePolicy で無効にしています。
 
 ## 目的
 
@@ -15,7 +15,7 @@ NAS 上の大きい動画ファイルを iPhone / iPad で安定して再生す�
 
 ## 結論（調査時点）
 
-※以下は調査時点の結論。最終実装は冒頭注記のとおり「MP4/MOV系はAVPlayer（SMBResourceLoaderDelegate + AMSMB2のバイト範囲読み込み）、MKVなど非対応フォーマットはVLCKitフォールバック」に変更済み。
+※以下は調査時点の結論。現在の実装は冒頭注記のとおり、形式を問わず MobileVLCKit の direct SMB 経路を使う。
 
 PFile の動画再生は MobileVLCKit に `smb://` URL を直接渡す direct SMB 経路を優先する。
 
