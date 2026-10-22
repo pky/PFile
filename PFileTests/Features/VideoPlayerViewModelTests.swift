@@ -127,4 +127,25 @@ final class VideoPlayerViewModelTests: XCTestCase {
         XCTAssertFalse(VideoPlayerEnginePolicy.usesAVPlayer(fileName: "movie.mov"))
         XCTAssertFalse(VideoPlayerEnginePolicy.usesAVPlayer(fileName: "movie.mkv"))
     }
+
+    // MARK: - VLC 一時停止中ドラッグの pause 遅延
+
+    func test_endInteractiveSeek_withoutMedia_doesNotDeferPause() {
+        // media 未設定では確定 seek が出ないので、完了待ちの pause 遅延を残してはいけない。
+        let vm = makeViewModel()
+        vm.durationSeconds = 100
+        vm.updateInteractiveSeek(to: 10)
+        vm.endInteractiveSeek()
+        XCTAssertFalse(vm.isVLCDeferredPausePending)
+    }
+
+    func test_tearDown_clearsDeferredPause() {
+        // 再生破棄後に遅延 pause が残ると、破棄済み player へ pause を送ることになる。
+        let vm = makeViewModel()
+        vm.durationSeconds = 100
+        vm.updateInteractiveSeek(to: 10)
+        vm.endInteractiveSeek()
+        vm.tearDownPlayback(trigger: "test")
+        XCTAssertFalse(vm.isVLCDeferredPausePending)
+    }
 }
