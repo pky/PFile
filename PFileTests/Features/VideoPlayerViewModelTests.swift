@@ -148,4 +148,45 @@ final class VideoPlayerViewModelTests: XCTestCase {
         vm.tearDownPlayback(trigger: "test")
         XCTAssertFalse(vm.isVLCDeferredPausePending)
     }
+
+    // MARK: - ドラッグ開始時の再生意図
+
+    func test_updateInteractiveSeek_usesPlaybackIntent_whenPlayerNotYetPlaying() {
+        // 読み込み中は isPlaying が false でも、再生意図があれば指を離した後に再開しなければならない。
+        let vm = makeViewModel()
+        vm.durationSeconds = 100
+        vm.playIfReady(trigger: "test")
+        vm.updateInteractiveSeek(to: 10)
+        XCTAssertTrue(vm.willResumePlaybackAfterInteractiveSeek)
+    }
+
+    func test_updateInteractiveSeek_keepsPausedIntent() {
+        // 一時停止中にドラッグを始めたら、指を離した後も停止のままにする。
+        let vm = makeViewModel()
+        vm.durationSeconds = 100
+        vm.pausePlayback(trigger: "test")
+        vm.updateInteractiveSeek(to: 10)
+        XCTAssertFalse(vm.willResumePlaybackAfterInteractiveSeek)
+    }
+
+    // MARK: - 一時的な消音再生中の消音切替
+
+    func test_playerMuted_forcesMuteDuringTemporaryScrubPlayback() {
+        // ドラッグ中の消音解除は設定だけ更新し、ずれた位置の音を出さない。
+        XCTAssertTrue(VideoPlayerViewModel.playerMuted(preference: false, temporaryScrubPlayback: true))
+        XCTAssertTrue(VideoPlayerViewModel.playerMuted(preference: true, temporaryScrubPlayback: true))
+        XCTAssertFalse(VideoPlayerViewModel.playerMuted(preference: false, temporaryScrubPlayback: false))
+        XCTAssertTrue(VideoPlayerViewModel.playerMuted(preference: true, temporaryScrubPlayback: false))
+    }
+
+    func test_vlcScrubPlaybackActive_duringInteractiveSeekOnly() {
+        // 強制消音の対象期間はドラッグ中と pause 遅延中だけで、通常再生へ戻ったら解除する。
+        let vm = makeViewModel()
+        vm.durationSeconds = 100
+        XCTAssertFalse(vm.isVLCScrubPlaybackActive)
+        vm.updateInteractiveSeek(to: 10)
+        XCTAssertTrue(vm.isVLCScrubPlaybackActive)
+        vm.endInteractiveSeek()
+        XCTAssertFalse(vm.isVLCScrubPlaybackActive)
+    }
 }
