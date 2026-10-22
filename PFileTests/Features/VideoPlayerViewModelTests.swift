@@ -113,10 +113,9 @@ final class VideoPlayerViewModelTests: XCTestCase {
         XCTAssertEqual(policy.inputCachingMilliseconds, 6000)
     }
 
-    func test_interactiveSeekPolicy_keepsDirectSMBPreviewDisabled() {
-        XCTAssertFalse(VideoPlayerInteractiveSeekPolicy.directSMBPreviewEnabled)
-        XCTAssertEqual(VideoPlayerInteractiveSeekPolicy.previewIntervalMilliseconds, 300)
-        XCTAssertEqual(VideoPlayerInteractiveSeekPolicy.minimumPreviewDeltaSeconds, 0.25)
+    func test_interactiveSeekPolicy_enablesDirectSMBPreview() {
+        XCTAssertTrue(VideoPlayerInteractiveSeekPolicy.directSMBPreviewEnabled)
+        XCTAssertEqual(VideoPlayerInteractiveSeekPolicy.previewMinimumInterval, 0.1)
     }
 
     // MARK: - VideoPlayerEnginePolicy
