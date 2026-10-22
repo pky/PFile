@@ -29,7 +29,7 @@ private actor SMBStreamingReadGate {
 }
 
 /// AMSMB2 でファイルを読み込み、VLCKit に渡すためのローカル HTTP サーバー。
-/// VLCKit の direct SMB（smb2://、libsmb2）で再生できない場合の代替経路。
+/// VLCKit の SMB クライアントは SMBv1 ベースのため Samba 新バージョンと互換性がない場合がある。
 /// このサーバーを経由することで SMB アクセスを AMSMB2（SMBv2/v3）に任せ、VLCKit には HTTP を渡す。
 final class SMBStreamingServer {
 

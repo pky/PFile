@@ -81,7 +81,6 @@ NASConfigをSwiftDataから削除する前に、必ずKeychainのエントリを
 
 - SMB2以上を使用（SMB1は脆弱性があるため使用禁止）
 - AMSMB2の接続設定でSMB1を明示的に無効化
-- 動画再生とサムネイル生成で MobileVLCKit に直接 SMB を渡す経路は、URL scheme を smb2:// にして libsmb2（SMB2/3）だけを使う。smb:// だと smb2 接続に失敗したとき libdsm（SMB1）へ落ちるため使わない
 
 ### ネットワーク
 

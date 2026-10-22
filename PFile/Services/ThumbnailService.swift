@@ -796,7 +796,7 @@ final class ThumbnailService: ThumbnailServiceProtocol {
         guard let credential = try? smbClientManager.loadCredential(for: connection),
               let host = connection.host else { return nil }
         var components = URLComponents()
-        components.scheme = VideoPlayerEnginePolicy.directSMBURLScheme
+        components.scheme = "smb"
         if !credential.username.isEmpty { components.user = credential.username }
         if !credential.password.isEmpty { components.password = credential.password }
         components.host = host

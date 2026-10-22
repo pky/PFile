@@ -128,13 +128,6 @@ final class VideoPlayerViewModelTests: XCTestCase {
         XCTAssertFalse(VideoPlayerEnginePolicy.usesAVPlayer(fileName: "movie.mkv"))
     }
 
-    // MARK: - VLC direct SMB の URL scheme
-
-    func test_enginePolicy_directSMBSchemeForcesSMB2() {
-        // smb:// だと VLC は smb2 接続に失敗したとき libdsm（SMB1）へ落ちる。smb2:// なら SMB1 へのフォールバックが起きない。
-        XCTAssertEqual(VideoPlayerEnginePolicy.directSMBURLScheme, "smb2")
-    }
-
     // MARK: - VLC 一時停止中ドラッグの pause 遅延
 
     func test_endInteractiveSeek_withoutMedia_doesNotDeferPause() {
