@@ -118,4 +118,14 @@ final class VideoPlayerViewModelTests: XCTestCase {
         XCTAssertEqual(VideoPlayerInteractiveSeekPolicy.previewIntervalMilliseconds, 300)
         XCTAssertEqual(VideoPlayerInteractiveSeekPolicy.minimumPreviewDeltaSeconds, 0.25)
     }
+
+    // MARK: - VideoPlayerEnginePolicy
+
+    func test_enginePolicy_routesMP4FamilyToVLC() {
+        XCTAssertFalse(VideoPlayerEnginePolicy.avPlayerEnabledForMP4Family)
+        XCTAssertFalse(VideoPlayerEnginePolicy.usesAVPlayer(fileName: "movie.mp4"))
+        XCTAssertFalse(VideoPlayerEnginePolicy.usesAVPlayer(fileName: "movie.M4V"))
+        XCTAssertFalse(VideoPlayerEnginePolicy.usesAVPlayer(fileName: "movie.mov"))
+        XCTAssertFalse(VideoPlayerEnginePolicy.usesAVPlayer(fileName: "movie.mkv"))
+    }
 }
