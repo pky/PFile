@@ -43,6 +43,9 @@ struct VideoPlayerInteractiveSeekPolicy {
 /// AVPlayer 経路の実装は残しており、この定数を true に戻せば再び有効になる。
 struct VideoPlayerEnginePolicy {
     static let avPlayerEnabledForMP4Family = false
+    /// VLC に渡す direct SMB の URL scheme。同梱の MobileVLCKit には libsmb2（SMB2/3）と libdsm（SMB1）の両方があり、
+    /// smb:// だと smb2 接続に失敗したとき SMB1 へ落ちる。smb2:// は libsmb2 だけに一致するので SMB1 を使わない。
+    static let directSMBURLScheme = "smb2"
     private static let mp4FamilyExtensions: Set<String> = ["mp4", "m4v", "mov"]
 
     static func usesAVPlayer(fileName: String) -> Bool {
@@ -1593,7 +1596,7 @@ final class VideoPlayerViewModel: NSObject {
         guard let credential = try? smbClientManager.loadCredential(for: connection),
               let host = connection.host else { return nil }
         var components = URLComponents()
-        components.scheme = "smb"
+        components.scheme = VideoPlayerEnginePolicy.directSMBURLScheme
         if !credential.username.isEmpty {
             components.user = credential.username
         }
