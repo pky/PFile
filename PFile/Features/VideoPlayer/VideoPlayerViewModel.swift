@@ -87,6 +87,14 @@ final class VideoPlayerViewModel: NSObject {
     private var vlcDeferredPauseTracker: VLCSeekCompletionPolicy.Tracker?
     private var vlcDeferredPauseTask: Task<Void, Never>?
     var isVLCDeferredPausePending: Bool { vlcDeferredPauseTracker != nil }
+    /// ドラッグ中と pause 遅延中は VLC を一時的に消音再生している。
+    var isVLCScrubPlaybackActive: Bool { isInteractiveSeeking || isVLCDeferredPausePending }
+    var willResumePlaybackAfterInteractiveSeek: Bool { wasPlayingBeforeInteractiveSeek }
+
+    /// 一時的な消音再生中は、ユーザーの消音設定にかかわらず player を消音のままにする。
+    static func playerMuted(preference: Bool, temporaryScrubPlayback: Bool) -> Bool {
+        temporaryScrubPlayback || preference
+    }
 
     private struct ScrubPreviewDiagnostics {
         let startedAt: TimeInterval
@@ -309,7 +317,8 @@ final class VideoPlayerViewModel: NSObject {
             return
         }
 #endif
-        player.audio?.isMuted = isMuted
+        // ドラッグ中の消音解除は設定だけ更新し、通常再生へ戻るときに反映する。
+        player.audio?.isMuted = Self.playerMuted(preference: isMuted, temporaryScrubPlayback: isVLCScrubPlaybackActive)
     }
 
     func skip(seconds: Double) {
@@ -345,15 +354,14 @@ final class VideoPlayerViewModel: NSObject {
         pendingInteractiveSeekSeconds = clamped
         if !isInteractiveSeeking {
             isInteractiveSeeking = true
-            // 前回のドラッグの pause 遅延中は消音再生が続いているが、ユーザーの意図は停止のまま。
-            let wasDeferringPause = isVLCDeferredPausePending
+            // 前回のドラッグの pause 遅延中なら取り消す。再生意図は pause のままなので判定に影響しない。
             cancelVLCDeferredPause()
             // drag 中は音と映像がずれるので AVPlayer は再生を止め、VLC は消音で再生を続ける。
-            // 指を離したときに元の状態へ戻す。AVPlayer は buffering で isPlaying が揺れるため、安定した再生意図で判定する。
+            // 指を離したときに元の状態へ戻す。buffering 中は isPlaying が false になるため、観測状態ではなく再生意図で判定する。
 #if !targetEnvironment(simulator)
-            wasPlayingBeforeInteractiveSeek = usesAVPlayer ? avIntendsToPlay : (isPlaying && !wasDeferringPause)
+            wasPlayingBeforeInteractiveSeek = usesAVPlayer ? avIntendsToPlay : vlcIntendsToPlay
 #else
-            wasPlayingBeforeInteractiveSeek = isPlaying && !wasDeferringPause
+            wasPlayingBeforeInteractiveSeek = vlcIntendsToPlay
 #endif
             pauseForInteractiveSeek()
             beginInteractiveSeekDiagnostics(startedSeconds: clamped)
