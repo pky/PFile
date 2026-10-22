@@ -84,6 +84,7 @@ final class VideoPlayerViewModel: NSObject {
     private var vlcScrubSeekState = VideoSeekState()
     private var vlcScrubSeekIssuedAt: TimeInterval = 0
     private var vlcScrubTimeoutTask: Task<Void, Never>?
+    private var vlcScrubSeekTracker: VLCSeekCompletionPolicy.Tracker?
 
     private struct ScrubPreviewDiagnostics {
         let startedAt: TimeInterval
@@ -479,6 +480,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     private func issueVLCScrubSeek(_ request: VideoSeekState.Request) {
+        vlcScrubSeekTracker = VLCSeekCompletionPolicy.Tracker(target: request.seconds)
         vlcScrubSeekIssuedAt = ProcessInfo.processInfo.systemUptime
         player.time = VLCTime(int: Int32(request.seconds * 1000))
         vlcScrubTimeoutTask?.cancel()
@@ -490,14 +492,15 @@ final class VideoPlayerViewModel: NSObject {
         }
     }
 
-    /// VLC は seek 完了を通知しないので、時刻通知が目標近傍に届いたときに完了とみなす。
+    /// VLC は seek 完了を通知しないので、エコー観測後に時刻が目標を越えた通知を完了とみなす。
     private func observeVLCScrubSeekProgress(observedSeconds: Double) {
         guard let inFlight = vlcScrubSeekState.inFlight,
-              VLCSeekCompletionPolicy.isCompleted(target: inFlight.seconds, observed: observedSeconds) else { return }
+              vlcScrubSeekTracker?.observe(observedSeconds) == true else { return }
         completeVLCScrubSeek(inFlight, finished: true)
     }
 
     private func completeVLCScrubSeek(_ request: VideoSeekState.Request, finished: Bool) {
+        vlcScrubSeekTracker = nil
         vlcScrubTimeoutTask?.cancel()
         vlcScrubTimeoutTask = nil
         let executionMs = max(0, Int((ProcessInfo.processInfo.systemUptime - vlcScrubSeekIssuedAt) * 1000))
@@ -512,6 +515,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     private func stopVLCScrubSeek() {
+        vlcScrubSeekTracker = nil
         vlcScrubTimeoutTask?.cancel()
         vlcScrubTimeoutTask = nil
         vlcScrubSeekState.reset()
