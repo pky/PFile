@@ -74,6 +74,13 @@ struct FileBrowserView: View {
         .onDisappear {
             OrientationService.shared.deactivate(contextID: orientationContextID)
         }
+        .onChange(of: isActive) { _, newValue in
+            if newValue {
+                OrientationService.shared.activate(.remote, contextID: orientationContextID)
+            } else {
+                OrientationService.shared.deactivate(contextID: orientationContextID)
+            }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
             case .background:
@@ -117,6 +124,7 @@ private struct DirectoryContentView: View {
     @State private var showAddToListSheet = false
     @State private var showSearchSheet = false
     @State private var thumbnailChoiceItem: DirectoryItem?
+    @State private var orientationContextID = UUID()
 
     var body: some View {
         Group {
@@ -230,6 +238,13 @@ private struct DirectoryContentView: View {
             if let viewModel, viewModel.isSelectMode {
                 selectModeBottomBar(viewModel: viewModel)
             }
+        }
+        .onAppear {
+            guard isActive else { return }
+            OrientationService.shared.activate(.remote, contextID: orientationContextID)
+        }
+        .onDisappear {
+            OrientationService.shared.deactivate(contextID: orientationContextID)
         }
     }
 
