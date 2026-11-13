@@ -516,7 +516,8 @@ struct HomeView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("PFile")
-        .navigationBarTitleDisplayMode(.large)
+        // .large だと detail 欄のバーが大タイトルの高さのまま残り、接続先を開いた後のタブバーに重なる
+        .toolbarTitleDisplayMode(.inlineLarge)
     }
 
     @ViewBuilder
