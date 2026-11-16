@@ -2011,6 +2011,8 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
         let previousMs = lastObservedPlaybackTimeMs
         lastObservedPlaybackTimeMs = ms
         currentPositionSeconds = Double(ms) / 1000.0
+        // 前進を数える瞬間の表示数を基準にするため、時刻通知のたびに統計を読み直す。
+        sampleScrubFrameCounts()
         scrubFrameStats?.recordTime(
             observedSeconds: currentPositionSeconds, at: ProcessInfo.processInfo.systemUptime
         )
