@@ -7,6 +7,7 @@ final class ScrubFrameStatsTests: XCTestCase {
         var stats = ScrubFrameStats(startedAt: 0)
         stats.recordPictureCounts(displayed: 10, lost: 2, at: 0)
         stats.recordSeekIssued(targetSeconds: 100, at: 0)
+        stats.recordTime(observedSeconds: 100, at: 0.01)
         stats.recordTime(observedSeconds: 100.5, at: 0.0205)
 
         let advanced = stats.summary(endedAt: 1)
@@ -45,11 +46,67 @@ final class ScrubFrameStatsTests: XCTestCase {
         XCTAssertEqual(summary.advancedSeekCount, 0)
         XCTAssertEqual(summary.effectiveSeekCount, 0)
         XCTAssertEqual(summary.advanceLatencyP50Ms, -1)
+        XCTAssertEqual(summary.advanceLatencyP90Ms, -1)
+    }
+
+    func test_timeWithinAdvanceRangeBeforeEchoDoesNotAdvanceSeek() {
+        var stats = ScrubFrameStats(startedAt: 0)
+        stats.recordPictureCounts(displayed: 10, lost: 0, at: 0)
+        stats.recordSeekIssued(targetSeconds: 10, at: 0)
+        stats.recordTime(observedSeconds: 10.5, at: 0.01)
+        stats.recordPictureCounts(displayed: 11, lost: 0, at: 0.02)
+
+        let beforeEcho = stats.summary(endedAt: 1)
+        XCTAssertEqual(beforeEcho.advancedSeekCount, 0)
+        XCTAssertEqual(beforeEcho.effectiveSeekCount, 0)
+        XCTAssertEqual(beforeEcho.advanceLatencyP50Ms, -1)
+        XCTAssertEqual(beforeEcho.advanceLatencyP90Ms, -1)
+
+        stats.recordTime(observedSeconds: 10, at: 0.03)
+        let echoed = stats.summary(endedAt: 1)
+        XCTAssertEqual(echoed.advancedSeekCount, 0)
+        XCTAssertEqual(echoed.advanceLatencyP50Ms, -1)
+        XCTAssertEqual(echoed.advanceLatencyP90Ms, -1)
+
+        stats.recordTime(observedSeconds: 10.5, at: 0.0405)
+        let advanced = stats.summary(endedAt: 1)
+        XCTAssertEqual(advanced.advancedSeekCount, 1)
+        XCTAssertEqual(advanced.effectiveSeekCount, 0)
+        XCTAssertEqual(advanced.advanceLatencyP50Ms, 40)
+        XCTAssertEqual(advanced.advanceLatencyP90Ms, 40)
+
+        stats.recordPictureCounts(displayed: 12, lost: 0, at: 0.0605)
+        let effective = stats.summary(endedAt: 1)
+        XCTAssertEqual(effective.effectiveSeekCount, 1)
+        XCTAssertEqual(effective.effectiveLatencyP50Ms, 60)
+    }
+
+    func test_newSeekDoesNotInheritPreviousSeekEcho() {
+        var stats = ScrubFrameStats(startedAt: 0)
+        stats.recordSeekIssued(targetSeconds: 10, at: 0)
+        stats.recordTime(observedSeconds: 10, at: 0.01)
+        stats.recordSeekIssued(targetSeconds: 20, at: 0.1)
+        stats.recordTime(observedSeconds: 20.5, at: 0.11)
+
+        let beforeEcho = stats.summary(endedAt: 1)
+        XCTAssertEqual(beforeEcho.seekCount, 2)
+        XCTAssertEqual(beforeEcho.advancedSeekCount, 0)
+        XCTAssertEqual(beforeEcho.effectiveSeekCount, 0)
+        XCTAssertEqual(beforeEcho.advanceLatencyP50Ms, -1)
+
+        stats.recordTime(observedSeconds: 20, at: 0.12)
+        XCTAssertEqual(stats.summary(endedAt: 1).advanceLatencyP50Ms, -1)
+        stats.recordTime(observedSeconds: 20.5, at: 0.1305)
+        let advanced = stats.summary(endedAt: 1)
+        XCTAssertEqual(advanced.advancedSeekCount, 1)
+        XCTAssertEqual(advanced.advanceLatencyP50Ms, 30)
+        XCTAssertEqual(advanced.advanceLatencyP90Ms, 30)
     }
 
     func test_timeBehindTargetOrBeyondToleranceDoesNotAdvanceSeek() {
         var stats = ScrubFrameStats(startedAt: 0)
         stats.recordSeekIssued(targetSeconds: 0, at: 0)
+        stats.recordTime(observedSeconds: 0, at: 0.01)
         stats.recordTime(observedSeconds: -0.5, at: 0.1)
         stats.recordTime(
             observedSeconds: VLCSeekCompletionPolicy.toleranceSeconds.nextUp,
@@ -68,6 +125,7 @@ final class ScrubFrameStatsTests: XCTestCase {
         ] {
             var stats = ScrubFrameStats(startedAt: 0)
             stats.recordSeekIssued(targetSeconds: 0, at: 0)
+            stats.recordTime(observedSeconds: 0, at: 0.01)
             stats.recordTime(observedSeconds: observed, at: 0.0205)
 
             XCTAssertEqual(stats.summary(endedAt: 1).advancedSeekCount, 1)
@@ -99,6 +157,7 @@ final class ScrubFrameStatsTests: XCTestCase {
         XCTAssertEqual(closed.advancedSeekCount, 0)
         XCTAssertEqual(closed.effectiveSeekCount, 0)
 
+        stats.recordTime(observedSeconds: 20, at: 0.35)
         stats.recordTime(observedSeconds: 20.5, at: 0.4)
         stats.recordPictureCounts(displayed: 12, lost: 0, at: 0.5)
         let current = stats.summary(endedAt: 1)
@@ -110,6 +169,7 @@ final class ScrubFrameStatsTests: XCTestCase {
         var stats = ScrubFrameStats(startedAt: 0)
         stats.recordPictureCounts(displayed: 10, lost: 0, at: 0)
         stats.recordSeekIssued(targetSeconds: 10, at: 0)
+        stats.recordTime(observedSeconds: 10, at: 0.01)
         stats.recordTime(observedSeconds: 10.5, at: 0.0205)
         stats.recordPictureCounts(displayed: 10, lost: 0, at: 0.03)
         stats.recordSeekIssued(targetSeconds: 20, at: 0.04)
@@ -130,6 +190,7 @@ final class ScrubFrameStatsTests: XCTestCase {
         stats.recordPictureCounts(displayed: 12, lost: 0, at: 0.01)
         XCTAssertEqual(stats.summary(endedAt: 1).effectiveSeekCount, 0)
 
+        stats.recordTime(observedSeconds: 10, at: 0.015)
         stats.recordTime(observedSeconds: 10.5, at: 0.02)
         stats.recordPictureCounts(displayed: 12, lost: 0, at: 0.03)
         XCTAssertEqual(stats.summary(endedAt: 1).effectiveSeekCount, 0)
@@ -141,6 +202,7 @@ final class ScrubFrameStatsTests: XCTestCase {
     func test_firstPictureSampleAfterAdvanceEstablishesBaseline() {
         var stats = ScrubFrameStats(startedAt: 0)
         stats.recordSeekIssued(targetSeconds: 10, at: 0)
+        stats.recordTime(observedSeconds: 10, at: 0.005)
         stats.recordTime(observedSeconds: 10.5, at: 0.01)
         stats.recordPictureCounts(displayed: 50, lost: 3, at: 0.02)
         stats.recordPictureCounts(displayed: 50, lost: 3, at: 0.03)
@@ -168,6 +230,61 @@ final class ScrubFrameStatsTests: XCTestCase {
         XCTAssertEqual(summary.lostPictures, 6)
     }
 
+    func test_pictureSampleAndDisplayedChangeCountsTrackValidSamples() {
+        var stats = ScrubFrameStats(startedAt: 0)
+        stats.recordPictureCounts(displayed: 10, lost: 0, at: 0)
+        let first = stats.summary(endedAt: 1)
+        XCTAssertEqual(first.pictureSampleCount, 1)
+        XCTAssertEqual(first.displayedChangeCount, 0)
+
+        stats.recordPictureCounts(displayed: 10, lost: 1, at: 0.1)
+        let unchanged = stats.summary(endedAt: 1)
+        XCTAssertEqual(unchanged.pictureSampleCount, 2)
+        XCTAssertEqual(unchanged.displayedChangeCount, 0)
+
+        stats.recordPictureCounts(displayed: 15, lost: 1, at: 0.2)
+        let increased = stats.summary(endedAt: 1)
+        XCTAssertEqual(increased.pictureSampleCount, 3)
+        XCTAssertEqual(increased.displayedChangeCount, 1)
+
+        stats.recordPictureCounts(displayed: 2, lost: 0, at: 0.3)
+        let reset = stats.summary(endedAt: 1)
+        XCTAssertEqual(reset.pictureSampleCount, 4)
+        XCTAssertEqual(reset.displayedChangeCount, 2)
+
+        stats.recordPictureCounts(displayed: 2, lost: 0, at: 0.4)
+        let unchangedAfterReset = stats.summary(endedAt: 1)
+        XCTAssertEqual(unchangedAfterReset.pictureSampleCount, 5)
+        XCTAssertEqual(unchangedAfterReset.displayedChangeCount, 2)
+    }
+
+    func test_nonFinitePictureTimeDoesNotCountSampleOrDisplayedChange() {
+        for invalid in [Double.nan, .infinity, -.infinity] {
+            var stats = ScrubFrameStats(startedAt: 0)
+            stats.recordPictureCounts(displayed: 100, lost: 0, at: invalid)
+            let invalidFirst = stats.summary(endedAt: 1)
+            XCTAssertEqual(invalidFirst.pictureSampleCount, 0)
+            XCTAssertEqual(invalidFirst.displayedChangeCount, 0)
+
+            stats.recordPictureCounts(displayed: 10, lost: 0, at: 0)
+            let first = stats.summary(endedAt: 1)
+            XCTAssertEqual(first.pictureSampleCount, 1)
+            XCTAssertEqual(first.displayedChangeCount, 0)
+
+            stats.recordPictureCounts(displayed: 100, lost: 0, at: invalid)
+            XCTAssertEqual(stats.summary(endedAt: 1), first)
+            stats.recordPictureCounts(displayed: 10, lost: 0, at: 0.1)
+            let unchanged = stats.summary(endedAt: 1)
+            XCTAssertEqual(unchanged.pictureSampleCount, 2)
+            XCTAssertEqual(unchanged.displayedChangeCount, 0)
+
+            stats.recordPictureCounts(displayed: 11, lost: 0, at: 0.2)
+            let changed = stats.summary(endedAt: 1)
+            XCTAssertEqual(changed.pictureSampleCount, 3)
+            XCTAssertEqual(changed.displayedChangeCount, 1)
+        }
+    }
+
     func test_percentilesUseNearestRank() {
         var stats = ScrubFrameStats(startedAt: 0)
         stats.recordPictureCounts(displayed: 0, lost: 0, at: 0)
@@ -176,6 +293,7 @@ final class ScrubFrameStatsTests: XCTestCase {
             let issuedAt = Double(index)
             let observedAt = issuedAt + (Double(latencyMs) + 0.5) / 1000
             stats.recordSeekIssued(targetSeconds: 0, at: issuedAt)
+            stats.recordTime(observedSeconds: 0, at: issuedAt + 0.001)
             stats.recordTime(observedSeconds: 0.5, at: observedAt)
             stats.recordPictureCounts(displayed: index + 1, lost: 0, at: observedAt)
         }
@@ -195,6 +313,8 @@ final class ScrubFrameStatsTests: XCTestCase {
         XCTAssertEqual(summary.effectiveSeekCount, 0)
         XCTAssertEqual(summary.displayedPictures, 0)
         XCTAssertEqual(summary.lostPictures, 0)
+        XCTAssertEqual(summary.pictureSampleCount, 0)
+        XCTAssertEqual(summary.displayedChangeCount, 0)
         XCTAssertEqual(summary.effectiveSeeksPerSecond, 0)
         XCTAssertEqual(summary.advanceLatencyP50Ms, -1)
         XCTAssertEqual(summary.advanceLatencyP90Ms, -1)
@@ -208,6 +328,7 @@ final class ScrubFrameStatsTests: XCTestCase {
         for index in 0..<2 {
             let issuedAt = Double(index)
             stats.recordSeekIssued(targetSeconds: 0, at: issuedAt)
+            stats.recordTime(observedSeconds: 0, at: issuedAt + 0.01)
             stats.recordTime(observedSeconds: 0.5, at: issuedAt + 0.1)
             stats.recordPictureCounts(displayed: index + 1, lost: 0, at: issuedAt + 0.2)
         }
@@ -229,6 +350,7 @@ final class ScrubFrameStatsTests: XCTestCase {
         var stats = ScrubFrameStats(startedAt: 0)
         stats.recordPictureCounts(displayed: 0, lost: 0, at: 0)
         stats.recordSeekIssued(targetSeconds: 0, at: 2)
+        stats.recordTime(observedSeconds: 0, at: 0.5)
         stats.recordTime(observedSeconds: 0.5, at: 1)
         stats.recordPictureCounts(displayed: 1, lost: 0, at: 1.5)
 
@@ -246,6 +368,7 @@ final class ScrubFrameStatsTests: XCTestCase {
             var stats = ScrubFrameStats(startedAt: 0)
             stats.recordPictureCounts(displayed: 0, lost: 0, at: 0)
             stats.recordSeekIssued(targetSeconds: 10, at: 0)
+            stats.recordTime(observedSeconds: 10, at: 0.01)
             let before = stats.summary(endedAt: 1)
 
             stats.recordSeekIssued(targetSeconds: invalid, at: 0.1)
@@ -267,6 +390,7 @@ final class ScrubFrameStatsTests: XCTestCase {
         for invalid in [Double.nan, .infinity, -.infinity] {
             var stats = ScrubFrameStats(startedAt: 0)
             stats.recordSeekIssued(targetSeconds: 0, at: 0)
+            stats.recordTime(observedSeconds: 0, at: 0.01)
             let before = stats.summary(endedAt: 1)
 
             stats.recordTime(observedSeconds: invalid, at: 0.1)
@@ -286,6 +410,7 @@ final class ScrubFrameStatsTests: XCTestCase {
             var stats = ScrubFrameStats(startedAt: 0)
             stats.recordPictureCounts(displayed: 10, lost: 2, at: 0)
             stats.recordSeekIssued(targetSeconds: 0, at: 0)
+            stats.recordTime(observedSeconds: 0, at: 0.01)
             stats.recordTime(observedSeconds: 0.5, at: 0.0205)
             let before = stats.summary(endedAt: 1)
 

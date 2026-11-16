@@ -34,6 +34,7 @@ final class DebugMetricsLogTests: XCTestCase {
         var stats = ScrubFrameStats(startedAt: 0)
         stats.recordPictureCounts(displayed: 10, lost: 1, at: 0)
         stats.recordSeekIssued(targetSeconds: 0, at: 0)
+        stats.recordTime(observedSeconds: 0, at: 0.01)
         stats.recordTime(observedSeconds: 0.5, at: 0.0205)
         stats.recordPictureCounts(displayed: 12, lost: 2, at: 0.0405)
         let report = ScrubFrameReport(
@@ -65,7 +66,8 @@ final class DebugMetricsLogTests: XCTestCase {
         XCTAssertEqual(Set(summary.keys), [
             "durationMs", "seekCount", "advancedSeekCount", "effectiveSeekCount",
             "effectiveSeeksPerSecond", "advanceLatencyP50Ms", "advanceLatencyP90Ms",
-            "effectiveLatencyP50Ms", "effectiveLatencyP90Ms", "displayedPictures", "lostPictures"
+            "effectiveLatencyP50Ms", "effectiveLatencyP90Ms", "displayedPictures", "lostPictures",
+            "pictureSampleCount", "displayedChangeCount"
         ])
         XCTAssertEqual(summary["durationMs"] as? Int, 2000)
         XCTAssertEqual(summary["seekCount"] as? Int, 1)
@@ -78,6 +80,8 @@ final class DebugMetricsLogTests: XCTestCase {
         XCTAssertEqual(summary["effectiveLatencyP90Ms"] as? Int, 40)
         XCTAssertEqual(summary["displayedPictures"] as? Int, 2)
         XCTAssertEqual(summary["lostPictures"] as? Int, 1)
+        XCTAssertEqual(summary["pictureSampleCount"] as? Int, 2)
+        XCTAssertEqual(summary["displayedChangeCount"] as? Int, 1)
     }
 
     func test_encodeLineReturnsNilWhenPayloadEncodingFails() {
