@@ -1,0 +1,4 @@
+// このファイルを同じディレクトリの Local.xcconfig にコピーして使用してください。
+// 自分の Bundle ID と Team ID に置き換え、行頭の // を外してください。
+// PRODUCT_BUNDLE_IDENTIFIER = com.example.pfile
+// DEVELOPMENT_TEAM = YOUR_TEAM_ID
