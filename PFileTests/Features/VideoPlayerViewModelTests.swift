@@ -369,4 +369,26 @@ final class VideoPlayerViewModelTests: XCTestCase {
         vm.endInteractiveSeek()
         XCTAssertFalse(vm.isVLCScrubPlaybackActive)
     }
+
+    // MARK: - 再生/一時停止ボタンの再生意図
+
+    func test_togglePlayPause_afterPlayIfReady_setsPausedIntent() {
+        // 読み込み中は isPlaying が false でも、再生ボタンを押したら停止の意図に切り替える。
+        let vm = makeViewModel()
+        vm.durationSeconds = 100
+        vm.playIfReady(trigger: "test")
+        vm.togglePlayPause()
+        vm.updateInteractiveSeek(to: 10)
+        XCTAssertFalse(vm.willResumePlaybackAfterInteractiveSeek)
+    }
+
+    func test_togglePlayPause_afterPausePlayback_setsPlayingIntent() {
+        // 一時停止中に再生ボタンを押したら、ドラッグ後も再開する意図に切り替える。
+        let vm = makeViewModel()
+        vm.durationSeconds = 100
+        vm.pausePlayback(trigger: "test")
+        vm.togglePlayPause()
+        vm.updateInteractiveSeek(to: 10)
+        XCTAssertTrue(vm.willResumePlaybackAfterInteractiveSeek)
+    }
 }
