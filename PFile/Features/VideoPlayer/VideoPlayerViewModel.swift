@@ -327,7 +327,8 @@ final class VideoPlayerViewModel: NSObject {
             return
         }
 #endif
-        if player.isPlaying {
+        // buffering 中の isPlaying ではなく再生意図で判定する。
+        if isVLCDeferredPausePending || vlcIntendsToPlay {
             pausePlayback(trigger: "toggle")
         } else {
             playIfReady(trigger: "toggle")
@@ -1855,6 +1856,12 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
 #if !targetEnvironment(simulator)
             scheduleDirectSMBStartupTimelineWatchdog(delaySeconds: 3)
 #endif
+        }
+
+        // opening 中に無視された一時停止要求を、再生開始時に再適用する。
+        if state == .playing, !vlcIntendsToPlay, !isInteractiveSeeking, !isVLCDeferredPausePending {
+            MediaDiagnostics.playback("event=pause_reapplied mediaID=\(mediaID) playerID=\(playerID)")
+            player.pause()
         }
 
         if state == .error {
