@@ -102,6 +102,9 @@ final class VideoPlayerViewModel: NSObject {
         minimumInterval: VideoPlayerInteractiveSeekPolicy.previewMinimumInterval
     )
     private var scrubPreviewDiagnostics: ScrubPreviewDiagnostics?
+    private var scrubFrameStats: ScrubFrameStats?
+    private var scrubFrameSamplerTask: Task<Void, Never>?
+    private var frameNetworkCachingMs: Int?
     // VLC 経路のドラッグ追従。seek は常に 1 件だけ実行し、完了は時刻通知か打ち切りで判定する。
     private var vlcScrubSeekState = VideoSeekState()
     private var vlcScrubSeekIssuedAt: TimeInterval = 0
@@ -288,6 +291,7 @@ final class VideoPlayerViewModel: NSObject {
 
     func cancelSetup() {
         isSetupCancelled = true
+        stopScrubFrameStats()
         if setupTask != nil {
             FirebaseSupport.logCrashlytics("[VideoPlayer] cancelSetup | playerID: \(playerID)")
             FirebaseSupport.logEvent("vp_setup_cancelled")
@@ -411,6 +415,7 @@ final class VideoPlayerViewModel: NSObject {
         if scrubPreviewState.sessionID == nil {
             scrubPreviewState.beginSession()
             scrubPreviewDiagnostics = ScrubPreviewDiagnostics(startedAt: ProcessInfo.processInfo.systemUptime)
+            startScrubFrameStats()
         }
         scrubPreviewDiagnostics?.inputCount += 1
         scrubPreviewState.update(seconds: clamped, duration: durationSeconds,
@@ -557,6 +562,7 @@ final class VideoPlayerViewModel: NSObject {
     private func issueVLCScrubSeek(_ request: VideoSeekState.Request) {
         vlcScrubSeekIssuedAt = ProcessInfo.processInfo.systemUptime
         player.time = VLCTime(int: Int32(request.seconds * 1000))
+        scrubFrameStats?.recordSeekIssued(targetSeconds: request.seconds, at: vlcScrubSeekIssuedAt)
         vlcScrubTimeoutTask?.cancel()
         vlcScrubTimeoutTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(VLCSeekCompletionPolicy.timeoutSeconds))
@@ -596,6 +602,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     private func stopScrubPreview() {
+        stopScrubFrameStats()
         logScrubPreviewSummary()
         scrubPreviewState.endSession()
         scrubPreviewTask?.cancel()
@@ -604,6 +611,78 @@ final class VideoPlayerViewModel: NSObject {
         // VLC のプレビュー seek は指を離したときの確定 seek が上書きするので破棄する。
         // 主AVPlayerの実行中seekは取消さず、確定目的の要求へ完了後に引き継ぐ。
         stopVLCScrubSeek()
+    }
+
+    private func startScrubFrameStats() {
+        guard !usesAVPlayer, !isSetupCancelled, !isTearingDownPlayback,
+              let sessionID = scrubPreviewState.sessionID else { return }
+        scrubFrameSamplerTask?.cancel()
+        scrubFrameStats = ScrubFrameStats(startedAt: ProcessInfo.processInfo.systemUptime)
+        sampleScrubFrameCounts()
+        scrubFrameSamplerTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .milliseconds(33))
+                } catch {
+                    return
+                }
+                // self は各サンプルの間だけ保持し、待機中は解放を妨げない。
+                guard !Task.isCancelled, let self,
+                      self.scrubPreviewState.sessionID == sessionID,
+                      self.scrubFrameStats != nil else { return }
+                self.sampleScrubFrameCounts()
+            }
+        }
+    }
+
+    private func sampleScrubFrameCounts() {
+        guard scrubFrameStats != nil, !usesAVPlayer,
+              let statistics = player.media?.statistics else { return }
+        scrubFrameStats?.recordPictureCounts(
+            displayed: Int(statistics.displayedPictures),
+            lost: Int(statistics.lostPictures),
+            at: ProcessInfo.processInfo.systemUptime
+        )
+    }
+
+    private func stopScrubFrameStats() {
+        scrubFrameSamplerTask?.cancel()
+        scrubFrameSamplerTask = nil
+        sampleScrubFrameCounts()
+        guard let stats = scrubFrameStats else { return }
+        scrubFrameStats = nil
+        let summary = stats.summary(endedAt: ProcessInfo.processInfo.systemUptime)
+        let report = ScrubFrameReport(
+            route: startupPlaybackPathLabel,
+            mediaDurationSeconds: Int(durationSeconds),
+            resolution: resolutionText,
+            networkCachingMs: frameNetworkCachingMs,
+            inputs: scrubPreviewDiagnostics?.inputCount ?? 0,
+            stats: summary
+        )
+        MediaDiagnostics.playback(
+            "event=scrub_frame_summary route=\(report.route) durationMs=\(summary.durationMs) seekCount=\(summary.seekCount) advancedSeekCount=\(summary.advancedSeekCount) effectiveSeekCount=\(summary.effectiveSeekCount) effectiveSeeksPerSecond=\(summary.effectiveSeeksPerSecond) advanceLatencyP50Ms=\(summary.advanceLatencyP50Ms) advanceLatencyP90Ms=\(summary.advanceLatencyP90Ms) effectiveLatencyP50Ms=\(summary.effectiveLatencyP50Ms) effectiveLatencyP90Ms=\(summary.effectiveLatencyP90Ms) displayedPictures=\(summary.displayedPictures) lostPictures=\(summary.lostPictures) pictureSampleCount=\(summary.pictureSampleCount) displayedChangeCount=\(summary.displayedChangeCount)"
+        )
+        DebugMetricsLog.record(event: "scrub_frame", payload: report)
+    }
+
+    private func logPlaybackFrameReport() {
+        guard !usesAVPlayer, mediaAttachedAt > 0,
+              let statistics = player.media?.statistics else { return }
+        let report = PlaybackFrameReport(
+            route: startupPlaybackPathLabel,
+            mediaDurationSeconds: Int(durationSeconds),
+            resolution: resolutionText,
+            networkCachingMs: frameNetworkCachingMs,
+            sessionMs: max(0, Int((CFAbsoluteTimeGetCurrent() - mediaAttachedAt) * 1000)),
+            displayedPictures: Int(statistics.displayedPictures),
+            lostPictures: Int(statistics.lostPictures),
+            decodedVideo: Int(statistics.decodedVideo)
+        )
+        MediaDiagnostics.playback(
+            "event=playback_frame_summary route=\(report.route) mediaDurationSeconds=\(report.mediaDurationSeconds) resolution=\(report.resolution ?? "unknown") networkCachingMs=\(report.networkCachingMs.map(String.init) ?? "none") sessionMs=\(report.sessionMs) displayedPictures=\(report.displayedPictures) lostPictures=\(report.lostPictures) decodedVideo=\(report.decodedVideo)"
+        )
+        DebugMetricsLog.record(event: "playback_frame", payload: report)
     }
 
     private func recordScrubPreviewSubmission(_ request: VideoScrubPreviewState.Request) {
@@ -868,6 +947,8 @@ final class VideoPlayerViewModel: NSObject {
         startupTimelineWatchdogTask = nil
         setupTask?.cancel()
         setupTask = nil
+        stopScrubFrameStats()
+        logPlaybackFrameReport()
         player.stop()
         player.delegate = nil
         player.media?.delegate = nil
@@ -1208,6 +1289,7 @@ final class VideoPlayerViewModel: NSObject {
         stopScrubPreview()
         cancelVLCDeferredPause()
         player.audio?.isMuted = Self.playerMuted(preference: isMuted, temporaryScrubPlayback: isInteractiveSeeking)
+        logPlaybackFrameReport()
         player.stop()
         player.media?.delegate = nil
         player.media = nil
@@ -1398,6 +1480,7 @@ final class VideoPlayerViewModel: NSObject {
         }
         media.parse(options: .parseNetwork, timeout: 10000)
         player.media = media
+        frameNetworkCachingMs = networkCaching
         proxyReadyAt = CFAbsoluteTimeGetCurrent()
         mediaAttachedAt = proxyReadyAt
         logStartupDiag(
@@ -1504,6 +1587,7 @@ final class VideoPlayerViewModel: NSObject {
         }
         media.parse(options: .parseNetwork, timeout: 10000)
         player.media = media
+        frameNetworkCachingMs = networkCaching
         mediaAttachedAt = CFAbsoluteTimeGetCurrent()
         logStartupDiag(
             event: "media_attached",
@@ -1552,6 +1636,8 @@ final class VideoPlayerViewModel: NSObject {
             extra: "originalStart: \(currentStartupStartPositionSeconds) | retryStart: \(retryStartPosition) | reason: timeline_not_ready"
         )
 
+        stopScrubFrameStats()
+        logPlaybackFrameReport()
         hasEverStartedPlaying = false
         startupDidLogPlaying = false
         playRequestedAt = 0
@@ -1635,6 +1721,7 @@ final class VideoPlayerViewModel: NSObject {
         }
         media.parse(options: .parseNetwork, timeout: 10000)
         player.media = media
+        frameNetworkCachingMs = nil
         mediaAttachedAt = CFAbsoluteTimeGetCurrent()
         logStartupDiag(
             event: "media_attached",
@@ -1705,6 +1792,7 @@ final class VideoPlayerViewModel: NSObject {
         }
         media.parse(options: .parseNetwork, timeout: 10000)
         player.media = media
+        frameNetworkCachingMs = nil
         mediaAttachedAt = CFAbsoluteTimeGetCurrent()
         logStartupDiag(event: "media_attached")
         MediaDiagnostics.playback("event=media_attached mediaID=\(mediaID) playerID=\(playerID) route=simulator_direct")
@@ -1749,6 +1837,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     private func resetStartupDiagnostics() {
+        stopScrubFrameStats()
         if let startupInterval {
             MediaDiagnostics.end(startupInterval, mediaID: mediaID, result: "restarted")
         }
@@ -1922,6 +2011,11 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
         let previousMs = lastObservedPlaybackTimeMs
         lastObservedPlaybackTimeMs = ms
         currentPositionSeconds = Double(ms) / 1000.0
+        // 前進を数える瞬間の表示数を基準にするため、時刻通知のたびに統計を読み直す。
+        sampleScrubFrameCounts()
+        scrubFrameStats?.recordTime(
+            observedSeconds: currentPositionSeconds, at: ProcessInfo.processInfo.systemUptime
+        )
         recordInteractiveSeekObservation(seconds: currentPositionSeconds)
         observeVLCScrubSeekProgress(observedSeconds: currentPositionSeconds)
         observeVLCDeferredPauseProgress(observedSeconds: currentPositionSeconds)
