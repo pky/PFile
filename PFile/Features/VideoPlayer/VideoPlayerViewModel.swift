@@ -1858,6 +1858,9 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
 #endif
         }
 
+        // 終端に達したら停止の意図に揃え、再生ボタンの次の操作で再生させる。
+        if state == .ended { vlcIntendsToPlay = false }
+
         // opening 中に無視された一時停止要求を、再生開始時に再適用する。
         if state == .playing, !vlcIntendsToPlay, !isInteractiveSeeking, !isVLCDeferredPausePending {
             MediaDiagnostics.playback("event=pause_reapplied mediaID=\(mediaID) playerID=\(playerID)")
