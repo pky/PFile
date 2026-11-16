@@ -31,6 +31,7 @@ Package.resolved
 *.provisionprofile
 ExportOptions.plist
 *.xcconfig
+!Config/PFile.xcconfig
 *.entitlements
 *.p8
 *.p12

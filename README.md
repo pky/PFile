@@ -81,6 +81,10 @@ xcodegen generate
 sh scripts/setup-hooks.sh
 ```
 
+自分の Team で実機ビルドする場合は、`Config/Local.xcconfig.example` を `Config/Local.xcconfig` にコピーしてください。
+コピーしたファイル内の設定行のコメントを外し、自分の Bundle ID と Team ID を設定します。
+`Config/Local.xcconfig` は Git 管理外です。ファイルがない場合は、Bundle ID が `jp.pky.pfile`、Team が空の既定値を使います。
+
 ## ビルドとテスト
 
 ビルド:
