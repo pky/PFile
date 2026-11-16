@@ -46,7 +46,7 @@ final class ScrubPreviewPlayer: @unchecked Sendable {
         asset.resourceLoader.setDelegate(resourceLoader, queue: loaderQueue)
         self.asset = asset
         let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 0
+        item.preferredForwardBufferDuration = 1
         playerItem = item
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             Task { @MainActor in

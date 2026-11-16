@@ -8,7 +8,7 @@ struct ScrubOverlayState: Equatable {
     }
 
     enum HideReason: String, Equatable {
-        case vlcCaughtUp, timeout, cancelled, noPreviewFrame
+        case vlcCaughtUp, timeout, cancelled, noPreviewFrame, superseded
     }
 
     static let settleTimeoutSeconds: TimeInterval = 3.0

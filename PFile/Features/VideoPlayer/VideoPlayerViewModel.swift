@@ -150,6 +150,7 @@ final class VideoPlayerViewModel: NSObject {
     private var avBufferingDebounceTask: Task<Void, Never>?
     // シーク操作の開始時に再生中だったか。指を離したときの再開判定に使う。
     private var wasPlayingBeforeInteractiveSeek = false
+    private var didPauseVLCForScrubOverlay = false
     // AVPlayer 経路でユーザーが再生を望んでいるかの意図。buffering で揺れる isPlaying と違い、
     // 明示的な再生/一時停止だけで変わる。連続シーク中の再開判定をこの値で安定させる。
     private var avIntendsToPlay: Bool {
@@ -342,6 +343,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func togglePlayPause() {
+        cancelSettlingScrubOverlay()
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
             // toggle 前の状態から再生意図を確定する。buffering 中の isPlaying には依存しない。
@@ -370,6 +372,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func skip(seconds: Double) {
+        cancelSettlingScrubOverlay()
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
             avController?.skip(seconds: seconds)
@@ -402,9 +405,10 @@ final class VideoPlayerViewModel: NSObject {
         pendingInteractiveSeekSeconds = clamped
         if !isInteractiveSeeking {
             isInteractiveSeeking = true
+            didPauseVLCForScrubOverlay = false
             // 前回のドラッグの pause 遅延中なら取り消す。再生意図は pause のままなので判定に影響しない。
             cancelVLCDeferredPause()
-            // drag 中は音と映像がずれるので AVPlayer は再生を止め、VLC は消音で再生を続ける。
+            // drag 中は音と映像がずれるので AVPlayer は停止し、VLC は消音にする。重ね表示を使う場合は後で VLC も止める。
             // 指を離したときに元の状態へ戻す。buffering 中は isPlaying が false になるため、観測状態ではなく再生意図で判定する。
 #if !targetEnvironment(simulator)
             wasPlayingBeforeInteractiveSeek = usesAVPlayer ? avIntendsToPlay : vlcIntendsToPlay
@@ -429,11 +433,16 @@ final class VideoPlayerViewModel: NSObject {
         }
         if scrubOverlayPlayer != nil, let controller = scrubOverlayController {
             if scrubOverlayState.phase != .dragging {
+                if case .settling = scrubOverlayState.phase {
+                    logScrubOverlaySummary(hideReason: .superseded)
+                }
                 stopScrubPreview()
                 scrubOverlayTimeoutTask?.cancel()
                 scrubOverlayTimeoutTask = nil
                 controller.cancelSeeks()
                 scrubOverlayState.beginDrag()
+                player.pause()
+                didPauseVLCForScrubOverlay = true
                 scrubOverlayStats = ScrubOverlayStats(startedAt: ProcessInfo.processInfo.systemUptime)
             }
             scrubOverlayStats?.recordInput()
@@ -483,6 +492,7 @@ final class VideoPlayerViewModel: NSObject {
         finishVLCInteractiveSeek(finalSeekSeconds: finalSeekSeconds)
 #endif
         wasPlayingBeforeInteractiveSeek = false
+        didPauseVLCForScrubOverlay = false
         finalizeInteractiveSeekDiagnosticsAfterDelay()
     }
 
@@ -503,15 +513,26 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     private func finishScrubOverlayIfIdle() {
-        guard scrubOverlayState.phase == .idle, let stats = scrubOverlayStats else { return }
+        guard scrubOverlayState.phase == .idle, scrubOverlayStats != nil else { return }
         scrubOverlayTimeoutTask?.cancel()
         scrubOverlayTimeoutTask = nil
 #if !targetEnvironment(simulator)
         scrubOverlayController?.cancelSeeks()
 #endif
+        logScrubOverlaySummary(hideReason: scrubOverlayState.lastHideReason)
+    }
+
+    private func cancelSettlingScrubOverlay() {
+        guard case .settling = scrubOverlayState.phase else { return }
+        scrubOverlayState.cancel()
+        finishScrubOverlayIfIdle()
+    }
+
+    private func logScrubOverlaySummary(hideReason: ScrubOverlayState.HideReason?) {
+        guard let stats = scrubOverlayStats else { return }
         scrubOverlayStats = nil
         let summary = stats.summary(endedAt: ProcessInfo.processInfo.systemUptime,
-                                    hideReason: scrubOverlayState.lastHideReason)
+                                    hideReason: hideReason)
         let report = ScrubOverlayReport(
             mediaDurationSeconds: durationSeconds.isFinite
                 ? Int(min(max(0, durationSeconds), Double(Int32.max))) : 0,
@@ -576,6 +597,10 @@ final class VideoPlayerViewModel: NSObject {
             player.audio?.isMuted = isMuted
             player.pause()
             return
+        }
+        if didPauseVLCForScrubOverlay {
+            // 重ね表示中に止めた VLC を消音で動かし、既存の完了待ちで再び止める。
+            player.play()
         }
         beginVLCDeferredPause(target: finalSeekSeconds)
     }
@@ -1000,6 +1025,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func pausePlayback(trigger: String) {
+        cancelSettlingScrubOverlay()
         MediaDiagnostics.playback("event=pause mediaID=\(mediaID) playerID=\(playerID) trigger=\(trigger)")
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
