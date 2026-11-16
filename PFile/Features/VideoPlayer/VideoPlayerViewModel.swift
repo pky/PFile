@@ -37,6 +37,12 @@ struct VideoPlayerInteractiveSeekPolicy {
     static let previewMinimumInterval: TimeInterval = 0.1
 }
 
+enum VideoPlaybackRoute: String, Hashable {
+    case directSMB = "direct_smb"
+    case httpProxy = "http_proxy"
+    case avPlayer = "av_player"
+}
+
 /// 再生エンジンの振り分け方針。
 /// AVPlayer 経路は特定の HEVC MP4 で表示がカクつき（iOS 側の統計では検出できない）、
 /// VLC 経路は NAS 上の重い動画でも軽く再生できたため、MP4 系も VLC に委ねる。
@@ -49,6 +55,22 @@ struct VideoPlayerEnginePolicy {
         guard avPlayerEnabledForMP4Family else { return false }
         let ext = (fileName as NSString).pathExtension.lowercased()
         return mp4FamilyExtensions.contains(ext)
+    }
+
+    static func nextRouteAfterFailure(
+        fileName: String,
+        failedRoute: VideoPlaybackRoute,
+        triedRoutes: Set<VideoPlaybackRoute>
+    ) -> VideoPlaybackRoute? {
+        let triedRoutes = triedRoutes.union([failedRoute])
+        if !triedRoutes.contains(.httpProxy) {
+            return .httpProxy
+        }
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        if mp4FamilyExtensions.contains(ext), !triedRoutes.contains(.avPlayer) {
+            return .avPlayer
+        }
+        return nil
     }
 }
 
@@ -136,6 +158,7 @@ final class VideoPlayerViewModel: NSObject {
     private let playbackHistoryService: PlaybackHistoryService
     private let smbClientManager: SMBClientManager
     private var setupTask: Task<Void, Never>?
+    private var isSetupCancelled = false
     private var isTearingDownPlayback = false
     private var startupBeganAt: CFAbsoluteTime = 0
     private var proxyReadyAt: CFAbsoluteTime = 0
@@ -145,6 +168,7 @@ final class VideoPlayerViewModel: NSObject {
     private var startupPlaybackPath: StartupPlaybackPath?
     private var didFallbackToProxy = false
     private var didFallbackFromAVPlayer = false
+    private var triedRoutes: Set<VideoPlaybackRoute> = []
     private var startupFallbackTask: Task<Void, Never>?
     private var startupTimelineWatchdogTask: Task<Void, Never>?
     private var currentStartupStartPositionSeconds: Double = 0
@@ -263,6 +287,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func cancelSetup() {
+        isSetupCancelled = true
         if setupTask != nil {
             FirebaseSupport.logCrashlytics("[VideoPlayer] cancelSetup | playerID: \(playerID)")
             FirebaseSupport.logEvent("vp_setup_cancelled")
@@ -864,6 +889,7 @@ final class VideoPlayerViewModel: NSObject {
         startupPlaybackPath = nil
         didFallbackToProxy = false
         didFallbackFromAVPlayer = false
+        triedRoutes.removeAll()
         isInteractiveSeeking = false
         isDrawableReady = false
         currentStartupStartPositionSeconds = 0
@@ -942,6 +968,7 @@ final class VideoPlayerViewModel: NSObject {
 #if !targetEnvironment(simulator)
         if Self.isAVPlayerEligible(item) {
             startupPlaybackPath = .avPlayer
+            triedRoutes.insert(.avPlayer)
             setupTask = Task { [weak self] in
                 await self?.prepareAVPlayerMedia(startPositionSeconds: startPositionSeconds)
             }
@@ -1010,10 +1037,7 @@ final class VideoPlayerViewModel: NSObject {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard !self.isTearingDownPlayback else { return }
-                MediaDiagnostics.playback(
-                    "event=avplayer_setup_failed mediaID=\(self.mediaID) playerID=\(self.playerID) fallback=http_proxy \(MediaDiagnostics.errorCode(error))"
-                )
-                self.startAVPlayerFallback(
+                self.handleAVPlayerFailure(
                     startPositionSeconds: startPositionSeconds,
                     error: error,
                     reason: "setup_failed"
@@ -1027,6 +1051,8 @@ final class VideoPlayerViewModel: NSObject {
         dataSource: ByteRangeDataSource,
         startPositionSeconds: Double
     ) {
+        let startPositionSeconds = pendingVLCSeekSeconds ?? startPositionSeconds
+        pendingVLCSeekSeconds = nil
         currentStartupStartPositionSeconds = startPositionSeconds
         hasObservedPlayableTimeline = false
         didLogStartupBufferingBeforeTimeline = false
@@ -1062,6 +1088,12 @@ final class VideoPlayerViewModel: NSObject {
         avPlayer = controller.player
         usesAVPlayer = true
         controller.setMuted(isMuted)
+        if !vlcIntendsToPlay {
+            controller.pause()
+        }
+        if isInteractiveSeeking {
+            controller.beginInteractiveSeek()
+        }
         controller.load()
 
         mediaAttachedAt = CFAbsoluteTimeGetCurrent()
@@ -1127,15 +1159,77 @@ final class VideoPlayerViewModel: NSObject {
                   let controller,
                   self.avController === controller,
                   !self.isTearingDownPlayback else { return }
-            let errorCode = error.map(MediaDiagnostics.errorCode) ?? "domain=unknown code=0"
-            MediaDiagnostics.playback(
-                "event=avplayer_failed mediaID=\(self.mediaID) playerID=\(self.playerID) fallback=http_proxy \(errorCode)"
-            )
-            self.startAVPlayerFallback(
+            self.handleAVPlayerFailure(
                 startPositionSeconds: controller.fallbackPositionSeconds,
                 error: error,
                 reason: "runtime_failed"
             )
+        }
+    }
+
+    private func handleAVPlayerFailure(
+        startPositionSeconds: Double,
+        error: Error?,
+        reason: String
+    ) {
+        let nextRoute = isSetupCancelled ? nil : VideoPlayerEnginePolicy.nextRouteAfterFailure(
+            fileName: item.name,
+            failedRoute: .avPlayer,
+            triedRoutes: triedRoutes
+        )
+        let event = reason == "setup_failed" ? "avplayer_setup_failed" : "avplayer_failed"
+        let errorCode = error.map(MediaDiagnostics.errorCode) ?? "domain=unknown code=0"
+        MediaDiagnostics.playback(
+            "event=\(event) mediaID=\(mediaID) playerID=\(playerID) fallback=\(nextRoute?.rawValue ?? "none") \(errorCode)"
+        )
+        if nextRoute == .httpProxy {
+            startAVPlayerFallback(startPositionSeconds: startPositionSeconds, error: error, reason: reason)
+        } else {
+            setupTask = nil
+            errorMessage = "再生エラーが発生しました"
+            avBufferingDebounceTask?.cancel()
+            avBufferingDebounceTask = nil
+            isBuffering = false
+        }
+    }
+
+    private func startVLCRouteFallback(from failedRoute: VideoPlaybackRoute, to nextRoute: VideoPlaybackRoute) {
+        let startPositionSeconds = currentPositionSeconds > 0
+            ? currentPositionSeconds : currentStartupStartPositionSeconds
+        let shouldAutoplay = vlcIntendsToPlay
+        // 非同期の準備が失敗しても、同じ経路を再度選ばない。
+        triedRoutes.formUnion([failedRoute, nextRoute])
+        startupTimelineWatchdogTask?.cancel()
+        startupTimelineWatchdogTask = nil
+        startupFallbackTask?.cancel()
+        startupFallbackTask = nil
+        setupTask?.cancel()
+        stopScrubPreview()
+        cancelVLCDeferredPause()
+        player.audio?.isMuted = Self.playerMuted(preference: isMuted, temporaryScrubPlayback: isInteractiveSeeking)
+        player.stop()
+        player.media?.delegate = nil
+        player.media = nil
+        errorMessage = nil
+        isBuffering = true
+        hasEverStartedPlaying = false
+        startupDidLogPlaying = false
+        currentPositionSeconds = startPositionSeconds
+        MediaDiagnostics.playback(
+            "event=route_fallback_begin mediaID=\(mediaID) playerID=\(playerID) from=\(failedRoute.rawValue) to=\(nextRoute.rawValue) startSeconds=\(startPositionSeconds)"
+        )
+        startupPlaybackPath = nextRoute == .httpProxy ? .httpProxy : .avPlayer
+        setupTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled, !self.isSetupCancelled,
+                  !self.isTearingDownPlayback else { return }
+            if nextRoute == .httpProxy {
+                await self.prepareHTTPProxyMedia(
+                    startPositionSeconds: startPositionSeconds,
+                    autoplay: shouldAutoplay && !self.isInteractiveSeeking
+                )
+            } else {
+                await self.prepareAVPlayerMedia(startPositionSeconds: startPositionSeconds)
+            }
         }
     }
 
@@ -1152,6 +1246,7 @@ final class VideoPlayerViewModel: NSObject {
         }
 
         didFallbackFromAVPlayer = true
+        triedRoutes.insert(.httpProxy)
         let shouldAutoplay = avIntendsToPlay
         vlcIntendsToPlay = shouldAutoplay
         if isInteractiveSeeking { wasPlayingBeforeInteractiveSeek = shouldAutoplay }
@@ -1165,8 +1260,9 @@ final class VideoPlayerViewModel: NSObject {
         isBuffering = true
         currentPositionSeconds = startPositionSeconds
         startupPlaybackPath = .httpProxy
-        setupTask = Task { [weak self] in
-            guard let self else { return }
+        setupTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled, !self.isSetupCancelled,
+                  !self.isTearingDownPlayback else { return }
             await self.prepareHTTPProxyMedia(
                 startPositionSeconds: startPositionSeconds,
                 autoplay: shouldAutoplay && !self.isInteractiveSeeking
@@ -1252,7 +1348,7 @@ final class VideoPlayerViewModel: NSObject {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard !self.isTearingDownPlayback else { return }
-                self.fallbackToDirectSMBAfterHTTPProxyFailure(
+                self.fallbackAfterHTTPProxyFailure(
                     startPositionSeconds: startPositionSeconds,
                     error: error,
                     autoplay: autoplay
@@ -1312,15 +1408,38 @@ final class VideoPlayerViewModel: NSObject {
         }
     }
 
-    private func fallbackToDirectSMBAfterHTTPProxyFailure(
+    @MainActor
+    private func fallbackAfterHTTPProxyFailure(
         startPositionSeconds: Double,
         error: Error,
         autoplay: Bool
     ) {
+        guard !isTearingDownPlayback else { return }
         setupTask = nil
+        let nextRoute: VideoPlaybackRoute?
+        if isSetupCancelled {
+            nextRoute = nil
+        } else if !triedRoutes.contains(.directSMB) {
+            nextRoute = .directSMB
+        } else {
+            nextRoute = VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                fileName: item.name,
+                failedRoute: .httpProxy,
+                triedRoutes: triedRoutes
+            )
+        }
         MediaDiagnostics.playback(
-            "event=proxy_setup_failed mediaID=\(mediaID) playerID=\(playerID) fallback=direct_smb \(MediaDiagnostics.errorCode(error))"
+            "event=proxy_setup_failed mediaID=\(mediaID) playerID=\(playerID) fallback=\(nextRoute?.rawValue ?? "none") \(MediaDiagnostics.errorCode(error))"
         )
+        if nextRoute == .avPlayer {
+            startVLCRouteFallback(from: .httpProxy, to: .avPlayer)
+            return
+        }
+        guard nextRoute == .directSMB else {
+            errorMessage = "再生エラーが発生しました"
+            isBuffering = false
+            return
+        }
         guard let url = buildSMBURL() else {
             errorMessage = "メディアURLの構築に失敗しました"
             MediaDiagnostics.playback("event=url_build_failed mediaID=\(mediaID) playerID=\(playerID) route=fallback_direct_smb")
@@ -1338,6 +1457,7 @@ final class VideoPlayerViewModel: NSObject {
         startPositionSeconds: Double,
         autoplay: Bool = true
     ) {
+        triedRoutes.insert(.directSMB)
         let startPositionSeconds = pendingVLCSeekSeconds ?? startPositionSeconds
         pendingVLCSeekSeconds = nil
         currentStartupStartPositionSeconds = startPositionSeconds
@@ -1644,6 +1764,7 @@ final class VideoPlayerViewModel: NSObject {
         startupPlaybackPath = nil
         didFallbackToProxy = false
         didFallbackFromAVPlayer = false
+        triedRoutes.removeAll()
         currentStartupStartPositionSeconds = 0
         directSMBStartupRetryCount = 0
         isInteractiveSeeking = false
@@ -1686,6 +1807,10 @@ final class VideoPlayerViewModel: NSObject {
 extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
 
     func mediaPlayerStateChanged(_ aNotification: Notification?) {
+#if !targetEnvironment(simulator)
+        // 切り替え準備中や AVPlayer 使用中の古い VLC 通知は状態へ反映しない。
+        guard player.media != nil, !usesAVPlayer else { return }
+#endif
         let state = player.state
         isPlaying = player.isPlaying
 
@@ -1739,9 +1864,33 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
             }
             let parsedStatus = player.media.map { parsedStatusLabel($0.parsedStatus) } ?? "no_media"
             let trackCount = player.media?.tracksInformation.count ?? 0
+#if !targetEnvironment(simulator)
+            let failedRoute: VideoPlaybackRoute?
+            switch startupPlaybackPath {
+            case .directSMB: failedRoute = .directSMB
+            case .httpProxy: failedRoute = .httpProxy
+            default: failedRoute = nil
+            }
+            let nextRoute = isSetupCancelled ? nil : failedRoute.flatMap {
+                VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                    fileName: item.name,
+                    failedRoute: $0,
+                    triedRoutes: triedRoutes
+                )
+            }
+            MediaDiagnostics.playback(
+                "event=vlc_error mediaID=\(mediaID) playerID=\(playerID) parsedStatus=\(parsedStatus) trackCount=\(trackCount) fallback=\(nextRoute?.rawValue ?? "none")"
+            )
+            if let failedRoute, let nextRoute {
+                startVLCRouteFallback(from: failedRoute, to: nextRoute)
+                return
+            }
+#endif
             errorMessage = "再生エラーが発生しました"
             recordPlayerErrorIfNeeded(parsedStatus: parsedStatus, trackCount: trackCount)
+#if targetEnvironment(simulator)
             MediaDiagnostics.playback("event=vlc_error mediaID=\(mediaID) playerID=\(playerID) parsedStatus=\(parsedStatus) trackCount=\(trackCount)")
+#endif
             logMediaDetails()
         }
 
@@ -1756,6 +1905,9 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
     }
 
     func mediaPlayerTimeChanged(_ aNotification: Notification?) {
+#if !targetEnvironment(simulator)
+        guard player.media != nil, !usesAVPlayer else { return }
+#endif
         let ms = player.time.intValue
         let previousMs = lastObservedPlaybackTimeMs
         lastObservedPlaybackTimeMs = ms
