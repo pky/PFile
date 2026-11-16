@@ -128,6 +128,186 @@ final class VideoPlayerViewModelTests: XCTestCase {
         XCTAssertFalse(VideoPlayerEnginePolicy.usesAVPlayer(fileName: "movie.mkv"))
     }
 
+    // MARK: - VLC 失敗時の経路切り替え
+
+    func test_nextRouteAfterFailure_directSMB_triesHTTPProxy() {
+        for fileName in ["movie.mp4", "movie.mkv"] {
+            XCTAssertEqual(
+                VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                    fileName: fileName,
+                    failedRoute: .directSMB,
+                    triedRoutes: [.directSMB]
+                ),
+                VideoPlaybackRoute.httpProxy,
+                fileName
+            )
+        }
+    }
+
+    func test_nextRouteAfterFailure_httpProxy_triesAVPlayerForMP4Family() {
+        for fileName in ["movie.mp4", "movie.m4v", "movie.mov", "movie.MP4", "movie.MoV"] {
+            XCTAssertEqual(
+                VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                    fileName: fileName,
+                    failedRoute: .httpProxy,
+                    triedRoutes: [.directSMB, .httpProxy]
+                ),
+                VideoPlaybackRoute.avPlayer,
+                fileName
+            )
+        }
+    }
+
+    func test_nextRouteAfterFailure_httpProxy_stopsForOtherExtensions() {
+        for fileName in ["movie.mkv", "movie.avi", "movie.ts", "movie"] {
+            XCTAssertNil(
+                VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                    fileName: fileName,
+                    failedRoute: .httpProxy,
+                    triedRoutes: [.directSMB, .httpProxy]
+                ),
+                fileName
+            )
+        }
+    }
+
+    func test_nextRouteAfterFailure_directSMB_triesAVPlayerWhenProxyAlreadyTried() {
+        XCTAssertEqual(
+            VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                fileName: "movie.mp4",
+                failedRoute: .directSMB,
+                triedRoutes: [.directSMB, .httpProxy]
+            ),
+            VideoPlaybackRoute.avPlayer
+        )
+    }
+
+    func test_nextRouteAfterFailure_directSMB_stopsForMKVWhenProxyAlreadyTried() {
+        XCTAssertNil(
+            VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                fileName: "movie.mkv",
+                failedRoute: .directSMB,
+                triedRoutes: [.directSMB, .httpProxy]
+            )
+        )
+    }
+
+    func test_nextRouteAfterFailure_avPlayer_stopsWhenAllRoutesTried() {
+        for fileName in ["movie.mp4", "movie.m4v", "movie.mov", "movie.MP4", "movie.MoV",
+                         "movie.mkv", "movie.avi", "movie.ts", "movie"] {
+            XCTAssertNil(
+                VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                    fileName: fileName,
+                    failedRoute: .avPlayer,
+                    triedRoutes: [.directSMB, .httpProxy, .avPlayer]
+                ),
+                fileName
+            )
+        }
+    }
+
+    func test_nextRouteAfterFailure_avPlayerFirst_triesHTTPProxy() {
+        for fileName in ["movie.mp4", "movie.m4v", "movie.mov", "movie.MP4", "movie.MoV",
+                         "movie.mkv", "movie.avi", "movie.ts", "movie"] {
+            XCTAssertEqual(
+                VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                    fileName: fileName,
+                    failedRoute: .avPlayer,
+                    triedRoutes: [.avPlayer]
+                ),
+                VideoPlaybackRoute.httpProxy,
+                fileName
+            )
+        }
+    }
+
+    func test_nextRouteAfterFailure_avPlayer_stopsWhenProxyAlreadyTried() {
+        for fileName in ["movie.mp4", "movie.m4v", "movie.mov", "movie.MP4", "movie.MoV",
+                         "movie.mkv", "movie.avi", "movie.ts", "movie"] {
+            XCTAssertNil(
+                VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                    fileName: fileName,
+                    failedRoute: .avPlayer,
+                    triedRoutes: [.avPlayer, .httpProxy]
+                ),
+                fileName
+            )
+        }
+    }
+
+    func test_nextRouteAfterFailure_neverReturnsFailedOrTriedRoute() {
+        let routes: [VideoPlaybackRoute] = [.directSMB, .httpProxy, .avPlayer]
+
+        // 3経路の試行済み集合を全8通り調べ、失敗経路を含まない入力も確認する。
+        for mask in 0..<(1 << routes.count) {
+            let triedRoutes = Set(routes.enumerated().compactMap { index, route in
+                mask & (1 << index) != 0 ? route : nil
+            })
+            for failedRoute in routes {
+                for fileName in ["movie.mp4", "movie.m4v", "movie.mov", "movie.MP4", "movie.MoV",
+                                 "movie.mkv", "movie.avi", "movie.ts", "movie"] {
+                    let nextRoute = VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                        fileName: fileName,
+                        failedRoute: failedRoute,
+                        triedRoutes: triedRoutes
+                    )
+                    if let nextRoute {
+                        let context = "\(fileName), failed=\(failedRoute), tried=\(triedRoutes)"
+                        XCTAssertNotEqual(nextRoute, failedRoute, context)
+                        XCTAssertFalse(triedRoutes.contains(nextRoute), context)
+                    }
+                }
+            }
+        }
+    }
+
+    func test_nextRouteAfterFailure_doesNotRequireFailedRouteInTriedRoutes() {
+        let routes: [VideoPlaybackRoute] = [.directSMB, .httpProxy, .avPlayer]
+
+        for mask in 0..<(1 << routes.count) {
+            let triedRoutes = Set(routes.enumerated().compactMap { index, route in
+                mask & (1 << index) != 0 ? route : nil
+            })
+            for failedRoute in routes {
+                for fileName in ["movie.mp4", "movie.m4v", "movie.mov", "movie.MP4", "movie.MoV",
+                                 "movie.mkv", "movie.avi", "movie.ts", "movie"] {
+                    XCTAssertEqual(
+                        VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                            fileName: fileName,
+                            failedRoute: failedRoute,
+                            triedRoutes: triedRoutes.subtracting([failedRoute])
+                        ),
+                        VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                            fileName: fileName,
+                            failedRoute: failedRoute,
+                            triedRoutes: triedRoutes.union([failedRoute])
+                        ),
+                        "\(fileName), failed=\(failedRoute), tried=\(triedRoutes)"
+                    )
+                }
+            }
+        }
+    }
+
+    func test_nextRouteAfterFailure_allowsAVPlayerWhenInitialAVPlayerPolicyDisabled() {
+        XCTAssertFalse(VideoPlayerEnginePolicy.avPlayerEnabledForMP4Family)
+        XCTAssertEqual(
+            VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                fileName: "movie.mp4",
+                failedRoute: .httpProxy,
+                triedRoutes: [.directSMB, .httpProxy]
+            ),
+            VideoPlaybackRoute.avPlayer
+        )
+    }
+
+    func test_enginePolicy_keepsInitialRoutingOnVLCForAllContractExtensions() {
+        for fileName in ["movie.mp4", "movie.m4v", "movie.mov", "movie.MP4", "movie.MoV",
+                         "movie.mkv", "movie.avi", "movie.ts", "movie"] {
+            XCTAssertFalse(VideoPlayerEnginePolicy.usesAVPlayer(fileName: fileName), fileName)
+        }
+    }
+
     // MARK: - VLC 一時停止中ドラッグの pause 遅延
 
     func test_endInteractiveSeek_withoutMedia_doesNotDeferPause() {
