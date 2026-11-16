@@ -158,6 +158,7 @@ final class VideoPlayerViewModel: NSObject {
     private let playbackHistoryService: PlaybackHistoryService
     private let smbClientManager: SMBClientManager
     private var setupTask: Task<Void, Never>?
+    private var isSetupCancelled = false
     private var isTearingDownPlayback = false
     private var startupBeganAt: CFAbsoluteTime = 0
     private var proxyReadyAt: CFAbsoluteTime = 0
@@ -286,6 +287,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func cancelSetup() {
+        isSetupCancelled = true
         if setupTask != nil {
             FirebaseSupport.logCrashlytics("[VideoPlayer] cancelSetup | playerID: \(playerID)")
             FirebaseSupport.logEvent("vp_setup_cancelled")
@@ -966,6 +968,7 @@ final class VideoPlayerViewModel: NSObject {
 #if !targetEnvironment(simulator)
         if Self.isAVPlayerEligible(item) {
             startupPlaybackPath = .avPlayer
+            triedRoutes.insert(.avPlayer)
             setupTask = Task { [weak self] in
                 await self?.prepareAVPlayerMedia(startPositionSeconds: startPositionSeconds)
             }
@@ -990,7 +993,6 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     private func prepareAVPlayerMedia(startPositionSeconds: Double) async {
-        triedRoutes.insert(.avPlayer)
         do {
             let credential = try smbClientManager.loadCredential(for: connection)
             let shareName = credential.shareName == "/" ? "" : credential.shareName
@@ -1170,7 +1172,7 @@ final class VideoPlayerViewModel: NSObject {
         error: Error?,
         reason: String
     ) {
-        let nextRoute = VideoPlayerEnginePolicy.nextRouteAfterFailure(
+        let nextRoute = isSetupCancelled ? nil : VideoPlayerEnginePolicy.nextRouteAfterFailure(
             fileName: item.name,
             failedRoute: .avPlayer,
             triedRoutes: triedRoutes
@@ -1185,6 +1187,8 @@ final class VideoPlayerViewModel: NSObject {
         } else {
             setupTask = nil
             errorMessage = "再生エラーが発生しました"
+            avBufferingDebounceTask?.cancel()
+            avBufferingDebounceTask = nil
             isBuffering = false
         }
     }
@@ -1215,8 +1219,9 @@ final class VideoPlayerViewModel: NSObject {
             "event=route_fallback_begin mediaID=\(mediaID) playerID=\(playerID) from=\(failedRoute.rawValue) to=\(nextRoute.rawValue) startSeconds=\(startPositionSeconds)"
         )
         startupPlaybackPath = nextRoute == .httpProxy ? .httpProxy : .avPlayer
-        setupTask = Task { [weak self] in
-            guard let self, !Task.isCancelled, !self.isTearingDownPlayback else { return }
+        setupTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled, !self.isSetupCancelled,
+                  !self.isTearingDownPlayback else { return }
             if nextRoute == .httpProxy {
                 await self.prepareHTTPProxyMedia(
                     startPositionSeconds: startPositionSeconds,
@@ -1241,6 +1246,7 @@ final class VideoPlayerViewModel: NSObject {
         }
 
         didFallbackFromAVPlayer = true
+        triedRoutes.insert(.httpProxy)
         let shouldAutoplay = avIntendsToPlay
         vlcIntendsToPlay = shouldAutoplay
         if isInteractiveSeeking { wasPlayingBeforeInteractiveSeek = shouldAutoplay }
@@ -1254,8 +1260,9 @@ final class VideoPlayerViewModel: NSObject {
         isBuffering = true
         currentPositionSeconds = startPositionSeconds
         startupPlaybackPath = .httpProxy
-        setupTask = Task { [weak self] in
-            guard let self else { return }
+        setupTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled, !self.isSetupCancelled,
+                  !self.isTearingDownPlayback else { return }
             await self.prepareHTTPProxyMedia(
                 startPositionSeconds: startPositionSeconds,
                 autoplay: shouldAutoplay && !self.isInteractiveSeeking
@@ -1302,7 +1309,6 @@ final class VideoPlayerViewModel: NSObject {
         startPositionSeconds: Double,
         autoplay: Bool
     ) async {
-        triedRoutes.insert(.httpProxy)
         do {
             let credential = try smbClientManager.loadCredential(for: connection)
             let shareName = credential.shareName == "/" ? "" : credential.shareName
@@ -1842,7 +1848,7 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
             case .httpProxy: failedRoute = .httpProxy
             default: failedRoute = nil
             }
-            let nextRoute = failedRoute.flatMap {
+            let nextRoute = isSetupCancelled ? nil : failedRoute.flatMap {
                 VideoPlayerEnginePolicy.nextRouteAfterFailure(
                     fileName: item.name,
                     failedRoute: $0,
