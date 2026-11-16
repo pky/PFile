@@ -110,15 +110,23 @@ struct VideoPlayerView: View {
                             .id(viewModel.playerID)
                             .ignoresSafeArea()
                     } else {
-                        VLCPlayerView(player: viewModel.player) {
-                            viewModel.markDrawableReady()
+                        ZStack {
+                            VLCPlayerView(player: viewModel.player) {
+                                viewModel.markDrawableReady()
+                            }
+                                .id(viewModel.playerID)
+                                .ignoresSafeArea()
+                            if let player = viewModel.scrubOverlayPlayer {
+                                AVPlayerLayerView(player: player, onReady: {})
+                                    .opacity(viewModel.isScrubOverlayVisible ? 1 : 0)
+                                    .allowsHitTesting(false)
+                                    .ignoresSafeArea()
+                            }
                         }
-                            .id(viewModel.playerID)
-                            .ignoresSafeArea()
                     }
                 }
                 .overlay {
-                    if viewModel.isBuffering {
+                    if viewModel.isBuffering && !viewModel.isScrubOverlayVisible {
                         ProgressView()
                             .tint(.white)
                             .scaleEffect(1.5)

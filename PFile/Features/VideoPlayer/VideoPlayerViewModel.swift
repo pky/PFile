@@ -31,6 +31,7 @@ struct VideoPlayerCachingPolicy {
 }
 
 struct VideoPlayerInteractiveSeekPolicy {
+    static let avPlayerScrubOverlayEnabled = true
     /// direct SMB でもドラッグ中に映像を追従させる。seek は常に 1 件に抑えるので連続 seek で詰まらない。
     static let directSMBPreviewEnabled = true
     /// ドラッグ入力を主プレイヤーへ渡す最小間隔。初回は即時。
@@ -96,6 +97,17 @@ final class VideoPlayerViewModel: NSObject {
     // MP4 / MOV は AVPlayer 経路で再生する。true のとき View は AVPlayerLayer を描画する。
     private(set) var usesAVPlayer = false
     private(set) var avPlayer: AVPlayer?
+    private(set) var scrubOverlayPlayer: AVPlayer?
+    private var scrubOverlayState = ScrubOverlayState()
+    private var scrubOverlayStats: ScrubOverlayStats?
+    private var scrubOverlayTimeoutTask: Task<Void, Never>?
+    var isScrubOverlayVisible: Bool { scrubOverlayState.isOverlayVisible }
+
+    private struct ScrubOverlayReport: Encodable {
+        let mediaDurationSeconds: Int
+        let resolution: String?
+        let summary: ScrubOverlayStats.Summary
+    }
     private var scrubPreviewTask: Task<Void, Never>?
     private var scrubPreviewTaskID: UUID?
     private var scrubPreviewState = VideoScrubPreviewState(
@@ -138,6 +150,7 @@ final class VideoPlayerViewModel: NSObject {
     private var avBufferingDebounceTask: Task<Void, Never>?
     // シーク操作の開始時に再生中だったか。指を離したときの再開判定に使う。
     private var wasPlayingBeforeInteractiveSeek = false
+    private var didPauseVLCForScrubOverlay = false
     // AVPlayer 経路でユーザーが再生を望んでいるかの意図。buffering で揺れる isPlaying と違い、
     // 明示的な再生/一時停止だけで変わる。連続シーク中の再開判定をこの値で安定させる。
     private var avIntendsToPlay: Bool {
@@ -257,6 +270,11 @@ final class VideoPlayerViewModel: NSObject {
     private var streamInput: SMBRangeInputStream?
     private var avController: AVPlayerVideoController?
     private var avStreamClient: SMB2Manager?
+    private var scrubOverlayController: ScrubPreviewPlayer?
+    private var scrubOverlayClient: SMB2Manager?
+    private var scrubOverlayPreparationTask: Task<Void, Never>?
+    private var scrubOverlayPreparationID: UUID?
+    private var scrubOverlayPreparationAttempted = false
 #endif
 
     init(
@@ -291,6 +309,7 @@ final class VideoPlayerViewModel: NSObject {
 
     func cancelSetup() {
         isSetupCancelled = true
+        tearDownScrubOverlay()
         stopScrubFrameStats()
         if setupTask != nil {
             FirebaseSupport.logCrashlytics("[VideoPlayer] cancelSetup | playerID: \(playerID)")
@@ -324,6 +343,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func togglePlayPause() {
+        cancelSettlingScrubOverlay()
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
             // toggle 前の状態から再生意図を確定する。buffering 中の isPlaying には依存しない。
@@ -352,6 +372,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func skip(seconds: Double) {
+        cancelSettlingScrubOverlay()
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
             avController?.skip(seconds: seconds)
@@ -384,9 +405,10 @@ final class VideoPlayerViewModel: NSObject {
         pendingInteractiveSeekSeconds = clamped
         if !isInteractiveSeeking {
             isInteractiveSeeking = true
+            didPauseVLCForScrubOverlay = false
             // 前回のドラッグの pause 遅延中なら取り消す。再生意図は pause のままなので判定に影響しない。
             cancelVLCDeferredPause()
-            // drag 中は音と映像がずれるので AVPlayer は再生を止め、VLC は消音で再生を続ける。
+            // drag 中は音と映像がずれるので AVPlayer は停止し、VLC は消音にする。重ね表示を使う場合は後で VLC も止める。
             // 指を離したときに元の状態へ戻す。buffering 中は isPlaying が false になるため、観測状態ではなく再生意図で判定する。
 #if !targetEnvironment(simulator)
             wasPlayingBeforeInteractiveSeek = usesAVPlayer ? avIntendsToPlay : vlcIntendsToPlay
@@ -409,6 +431,24 @@ final class VideoPlayerViewModel: NSObject {
             scheduleScrubPreview()
             return
         }
+        if scrubOverlayPlayer != nil, let controller = scrubOverlayController {
+            if scrubOverlayState.phase != .dragging {
+                if case .settling = scrubOverlayState.phase {
+                    logScrubOverlaySummary(hideReason: .superseded)
+                }
+                stopScrubPreview()
+                scrubOverlayTimeoutTask?.cancel()
+                scrubOverlayTimeoutTask = nil
+                controller.cancelSeeks()
+                scrubOverlayState.beginDrag()
+                player.pause()
+                didPauseVLCForScrubOverlay = true
+                scrubOverlayStats = ScrubOverlayStats(startedAt: ProcessInfo.processInfo.systemUptime)
+            }
+            scrubOverlayStats?.recordInput()
+            controller.requestSeek(seconds: clamped)
+            if scrubOverlayState.suppressesVLCScrubSeeks { return }
+        }
 #endif
 
         guard shouldPreviewInteractiveSeekDuringDrag else { return }
@@ -430,6 +470,12 @@ final class VideoPlayerViewModel: NSObject {
         if let pendingInteractiveSeekSeconds {
             recordInteractiveSeekRequest(seconds: pendingInteractiveSeekSeconds)
             interactiveSeekDiagnostics?.finalRequestedSeconds = pendingInteractiveSeekSeconds
+            // time 設定直後のエコーも拾えるよう、確定 seek より先に待機へ移る。
+            endScrubOverlayDrag(target: pendingInteractiveSeekSeconds)
+            if didPauseVLCForScrubOverlay, player.media != nil {
+                // VLC は一時停止中の seek でフレームも時刻通知も出さないので、消音のまま先に再生へ戻す。
+                player.play()
+            }
             seek(to: pendingInteractiveSeekSeconds)
             finalSeekSeconds = pendingInteractiveSeekSeconds
         }
@@ -450,7 +496,82 @@ final class VideoPlayerViewModel: NSObject {
         finishVLCInteractiveSeek(finalSeekSeconds: finalSeekSeconds)
 #endif
         wasPlayingBeforeInteractiveSeek = false
+        didPauseVLCForScrubOverlay = false
         finalizeInteractiveSeekDiagnosticsAfterDelay()
+    }
+
+    private func endScrubOverlayDrag(target: Double) {
+        guard scrubOverlayState.phase == .dragging else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        scrubOverlayStats?.recordDragEnded(at: now)
+        scrubOverlayState.endDrag(target: target, at: now)
+        finishScrubOverlayIfIdle()
+        guard case .settling = scrubOverlayState.phase else { return }
+        scrubOverlayTimeoutTask?.cancel()
+        scrubOverlayTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(ScrubOverlayState.settleTimeoutSeconds))
+            guard !Task.isCancelled, let self else { return }
+            self.scrubOverlayState.checkTimeout(now: ProcessInfo.processInfo.systemUptime)
+            self.finishScrubOverlayIfIdle()
+        }
+    }
+
+    private func finishScrubOverlayIfIdle() {
+        guard scrubOverlayState.phase == .idle, scrubOverlayStats != nil else { return }
+        scrubOverlayTimeoutTask?.cancel()
+        scrubOverlayTimeoutTask = nil
+#if !targetEnvironment(simulator)
+        scrubOverlayController?.cancelSeeks()
+#endif
+        logScrubOverlaySummary(hideReason: scrubOverlayState.lastHideReason)
+    }
+
+    private func cancelSettlingScrubOverlay() {
+        guard case .settling = scrubOverlayState.phase else { return }
+        scrubOverlayState.cancel()
+        finishScrubOverlayIfIdle()
+    }
+
+    private func logScrubOverlaySummary(hideReason: ScrubOverlayState.HideReason?) {
+        guard let stats = scrubOverlayStats else { return }
+        scrubOverlayStats = nil
+        let summary = stats.summary(endedAt: ProcessInfo.processInfo.systemUptime,
+                                    hideReason: hideReason)
+        let report = ScrubOverlayReport(
+            mediaDurationSeconds: durationSeconds.isFinite
+                ? Int(min(max(0, durationSeconds), Double(Int32.max))) : 0,
+            resolution: resolutionText,
+            summary: summary
+        )
+        MediaDiagnostics.playback(
+            "event=scrub_overlay_summary mediaDurationSeconds=\(report.mediaDurationSeconds) resolution=\(report.resolution ?? "unknown") inputs=\(summary.inputs) previewSeeks=\(summary.previewSeeks) previewCompleted=\(summary.previewCompleted) previewFinished=\(summary.previewFinished) previewLatencyP50Ms=\(summary.previewLatencyP50Ms) previewLatencyP90Ms=\(summary.previewLatencyP90Ms) firstFrameMs=\(summary.firstFrameMs) settleMs=\(summary.settleMs) hideReason=\(summary.hideReason)"
+        )
+        DebugMetricsLog.record(event: "scrub_overlay", payload: report)
+    }
+
+    private func tearDownScrubOverlay() {
+        scrubOverlayTimeoutTask?.cancel()
+        scrubOverlayTimeoutTask = nil
+        scrubOverlayState.cancel()
+        finishScrubOverlayIfIdle()
+        scrubOverlayPlayer = nil
+#if !targetEnvironment(simulator)
+        scrubOverlayPreparationTask?.cancel()
+        scrubOverlayPreparationTask = nil
+        scrubOverlayPreparationID = nil
+        scrubOverlayPreparationAttempted = false
+        scrubOverlayController?.tearDown()
+        scrubOverlayController = nil
+        let client = scrubOverlayClient
+        scrubOverlayClient = nil
+        if let client {
+            Task {
+                try? await SMB2OperationGate.runAsync {
+                    try await client.disconnectShare()
+                }
+            }
+        }
+#endif
     }
 
     private func pauseForInteractiveSeek() {
@@ -904,6 +1025,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     func pausePlayback(trigger: String) {
+        cancelSettlingScrubOverlay()
         MediaDiagnostics.playback("event=pause mediaID=\(mediaID) playerID=\(playerID) trigger=\(trigger)")
 #if !targetEnvironment(simulator)
         if usesAVPlayer {
@@ -941,6 +1063,7 @@ final class VideoPlayerViewModel: NSObject {
         MediaDiagnostics.playback("event=teardown_begin mediaID=\(mediaID) playerID=\(playerID) trigger=\(trigger)")
         VideoPlayerDiagnostics.logMemory(event: "teardown_start_\(trigger)", playerID: playerID)
         isTearingDownPlayback = true
+        tearDownScrubOverlay()
         startupFallbackTask?.cancel()
         startupFallbackTask = nil
         startupTimelineWatchdogTask?.cancel()
@@ -1074,6 +1197,99 @@ final class VideoPlayerViewModel: NSObject {
         attachDirectSMBMedia(url: url, startPositionSeconds: startPositionSeconds)
     }
 
+    private func prepareScrubOverlayIfNeeded() {
+        guard VideoPlayerInteractiveSeekPolicy.avPlayerScrubOverlayEnabled,
+              startupPlaybackPath == .directSMB, !usesAVPlayer,
+              !isSetupCancelled, !isTearingDownPlayback,
+              !scrubOverlayPreparationAttempted,
+              ["mp4", "m4v", "mov"].contains((item.name as NSString).pathExtension.lowercased()) else { return }
+        scrubOverlayPreparationAttempted = true
+        let preparationID = UUID()
+        scrubOverlayPreparationID = preparationID
+        let manager = smbClientManager
+        let connection = connection
+        let item = item
+        let ownerID = playerID
+        let mediaID = mediaID
+        scrubOverlayPreparationTask = Task { @MainActor [weak self] in
+            // 引き渡すまではこの Task が接続を所有し、すべての失敗・中止経路で切断する。
+            var pendingClient: SMB2Manager?
+            do {
+                try Task.checkCancellation()
+                let credential = try manager.loadCredential(for: connection)
+                let shareName = credential.shareName == "/" ? "" : credential.shareName
+                let client = try manager.makeDedicatedClient(for: connection)
+                pendingClient = client
+                try await SMB2OperationGate.runAsync {
+                    try await client.connectShare(name: shareName)
+                }
+                try Task.checkCancellation()
+                guard let path = await self?.resolveSMBStreamPath(client: client, path: item.path) else {
+                    throw CancellationError()
+                }
+                try Task.checkCancellation()
+                guard let fileSize = try await self?.resolveSMBStreamFileSize(client: client, path: path) else {
+                    throw CancellationError()
+                }
+                try Task.checkCancellation()
+                guard let self, self.scrubOverlayPreparationID == preparationID,
+                      !self.isSetupCancelled, !self.isTearingDownPlayback,
+                      self.startupPlaybackPath == .directSMB, !self.usesAVPlayer else {
+                    throw CancellationError()
+                }
+                let dataSource = SMBByteRangeDataSource(
+                    client: client, path: path, fileSize: fileSize, ownerID: ownerID
+                )
+                let controller = ScrubPreviewPlayer(
+                    dataSource: dataSource, contentType: Self.avContentType(for: item),
+                    fileName: item.name, ownerID: ownerID, mediaID: mediaID
+                )
+                controller.onReadyChanged = { [weak self, weak controller] ready in
+                    guard let self, let controller, self.scrubOverlayController === controller,
+                          !self.isSetupCancelled, !self.isTearingDownPlayback else { return }
+                    if ready {
+                        self.scrubOverlayPlayer = controller.player
+                    } else {
+                        MediaDiagnostics.playback("event=scrub_overlay_setup_failed stage=player")
+                        self.tearDownScrubOverlay()
+                        self.scrubOverlayPreparationAttempted = true
+                    }
+                }
+                controller.onSeekIssued = { [weak self, weak controller] in
+                    guard let self, let controller, self.scrubOverlayController === controller else { return }
+                    self.scrubOverlayStats?.recordPreviewSeekIssued()
+                }
+                controller.onSeekCompleted = { [weak self, weak controller] finished, latencyMs in
+                    guard let self, let controller, self.scrubOverlayController === controller,
+                          !self.isSetupCancelled, !self.isTearingDownPlayback else { return }
+                    self.scrubOverlayStats?.recordPreviewSeekCompleted(
+                        finished: finished, latencyMs: latencyMs, at: ProcessInfo.processInfo.systemUptime
+                    )
+                    self.scrubOverlayState.previewSeekCompleted(finished: finished)
+                }
+                self.scrubOverlayClient = client
+                self.scrubOverlayController = controller
+                pendingClient = nil
+                self.scrubOverlayPreparationTask = nil
+                controller.load()
+            } catch {
+                if !Task.isCancelled, !(error is CancellationError) {
+                    MediaDiagnostics.playback(
+                        "event=scrub_overlay_setup_failed stage=connection \(MediaDiagnostics.errorCode(error))"
+                    )
+                }
+                if self?.scrubOverlayPreparationID == preparationID {
+                    self?.scrubOverlayPreparationTask = nil
+                }
+            }
+            if let client = pendingClient {
+                try? await SMB2OperationGate.runAsync {
+                    try await client.disconnectShare()
+                }
+            }
+        }
+    }
+
     private func prepareAVPlayerMedia(startPositionSeconds: Double) async {
         do {
             let credential = try smbClientManager.loadCredential(for: connection)
@@ -1133,6 +1349,7 @@ final class VideoPlayerViewModel: NSObject {
         dataSource: ByteRangeDataSource,
         startPositionSeconds: Double
     ) {
+        tearDownScrubOverlay()
         let startPositionSeconds = pendingVLCSeekSeconds ?? startPositionSeconds
         pendingVLCSeekSeconds = nil
         currentStartupStartPositionSeconds = startPositionSeconds
@@ -1276,6 +1493,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     private func startVLCRouteFallback(from failedRoute: VideoPlaybackRoute, to nextRoute: VideoPlaybackRoute) {
+        tearDownScrubOverlay()
         let startPositionSeconds = currentPositionSeconds > 0
             ? currentPositionSeconds : currentStartupStartPositionSeconds
         let shouldAutoplay = vlcIntendsToPlay
@@ -1446,6 +1664,7 @@ final class VideoPlayerViewModel: NSObject {
         startPositionSeconds: Double,
         autoplay: Bool
     ) {
+        tearDownScrubOverlay()
         let startPositionSeconds = pendingVLCSeekSeconds ?? startPositionSeconds
         pendingVLCSeekSeconds = nil
         currentStartupStartPositionSeconds = startPositionSeconds
@@ -1541,6 +1760,7 @@ final class VideoPlayerViewModel: NSObject {
         startPositionSeconds: Double,
         autoplay: Bool = true
     ) {
+        tearDownScrubOverlay()
         triedRoutes.insert(.directSMB)
         let startPositionSeconds = pendingVLCSeekSeconds ?? startPositionSeconds
         pendingVLCSeekSeconds = nil
@@ -1699,6 +1919,7 @@ final class VideoPlayerViewModel: NSObject {
         fileSize: UInt64,
         startPositionSeconds: Double
     ) {
+        tearDownScrubOverlay()
         streamInput?.close()
         let oldClient = streamClient
         Task {
@@ -1837,6 +2058,7 @@ final class VideoPlayerViewModel: NSObject {
     }
 
     private func resetStartupDiagnostics() {
+        tearDownScrubOverlay()
         stopScrubFrameStats()
         if let startupInterval {
             MediaDiagnostics.end(startupInterval, mediaID: mediaID, result: "restarted")
@@ -1943,6 +2165,7 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
                 finishStartupInterval(result: startupPlaybackPathLabel)
             }
 #if !targetEnvironment(simulator)
+            prepareScrubOverlayIfNeeded()
             scheduleDirectSMBStartupTimelineWatchdog(delaySeconds: 3)
 #endif
         }
@@ -2011,6 +2234,8 @@ extension VideoPlayerViewModel: VLCMediaPlayerDelegate {
         let previousMs = lastObservedPlaybackTimeMs
         lastObservedPlaybackTimeMs = ms
         currentPositionSeconds = Double(ms) / 1000.0
+        scrubOverlayState.observeVLC(seconds: currentPositionSeconds)
+        finishScrubOverlayIfIdle()
         // 前進を数える瞬間の表示数を基準にするため、時刻通知のたびに統計を読み直す。
         sampleScrubFrameCounts()
         scrubFrameStats?.recordTime(
