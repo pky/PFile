@@ -1348,7 +1348,7 @@ final class VideoPlayerViewModel: NSObject {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard !self.isTearingDownPlayback else { return }
-                self.fallbackToDirectSMBAfterHTTPProxyFailure(
+                self.fallbackAfterHTTPProxyFailure(
                     startPositionSeconds: startPositionSeconds,
                     error: error,
                     autoplay: autoplay
@@ -1408,15 +1408,38 @@ final class VideoPlayerViewModel: NSObject {
         }
     }
 
-    private func fallbackToDirectSMBAfterHTTPProxyFailure(
+    @MainActor
+    private func fallbackAfterHTTPProxyFailure(
         startPositionSeconds: Double,
         error: Error,
         autoplay: Bool
     ) {
+        guard !isTearingDownPlayback else { return }
         setupTask = nil
+        let nextRoute: VideoPlaybackRoute?
+        if isSetupCancelled {
+            nextRoute = nil
+        } else if !triedRoutes.contains(.directSMB) {
+            nextRoute = .directSMB
+        } else {
+            nextRoute = VideoPlayerEnginePolicy.nextRouteAfterFailure(
+                fileName: item.name,
+                failedRoute: .httpProxy,
+                triedRoutes: triedRoutes
+            )
+        }
         MediaDiagnostics.playback(
-            "event=proxy_setup_failed mediaID=\(mediaID) playerID=\(playerID) fallback=direct_smb \(MediaDiagnostics.errorCode(error))"
+            "event=proxy_setup_failed mediaID=\(mediaID) playerID=\(playerID) fallback=\(nextRoute?.rawValue ?? "none") \(MediaDiagnostics.errorCode(error))"
         )
+        if nextRoute == .avPlayer {
+            startVLCRouteFallback(from: .httpProxy, to: .avPlayer)
+            return
+        }
+        guard nextRoute == .directSMB else {
+            errorMessage = "再生エラーが発生しました"
+            isBuffering = false
+            return
+        }
         guard let url = buildSMBURL() else {
             errorMessage = "メディアURLの構築に失敗しました"
             MediaDiagnostics.playback("event=url_build_failed mediaID=\(mediaID) playerID=\(playerID) route=fallback_direct_smb")
