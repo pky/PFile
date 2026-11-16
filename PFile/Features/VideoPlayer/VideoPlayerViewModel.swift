@@ -472,6 +472,10 @@ final class VideoPlayerViewModel: NSObject {
             interactiveSeekDiagnostics?.finalRequestedSeconds = pendingInteractiveSeekSeconds
             // time 設定直後のエコーも拾えるよう、確定 seek より先に待機へ移る。
             endScrubOverlayDrag(target: pendingInteractiveSeekSeconds)
+            if didPauseVLCForScrubOverlay, player.media != nil {
+                // VLC は一時停止中の seek でフレームも時刻通知も出さないので、消音のまま先に再生へ戻す。
+                player.play()
+            }
             seek(to: pendingInteractiveSeekSeconds)
             finalSeekSeconds = pendingInteractiveSeekSeconds
         }
@@ -597,10 +601,6 @@ final class VideoPlayerViewModel: NSObject {
             player.audio?.isMuted = isMuted
             player.pause()
             return
-        }
-        if didPauseVLCForScrubOverlay {
-            // 重ね表示中に止めた VLC を消音で動かし、既存の完了待ちで再び止める。
-            player.play()
         }
         beginVLCDeferredPause(target: finalSeekSeconds)
     }
