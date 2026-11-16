@@ -13,11 +13,14 @@ struct ScrubFrameStats {
         let effectiveLatencyP90Ms: Int
         let displayedPictures: Int
         let lostPictures: Int
+        let pictureSampleCount: Int
+        let displayedChangeCount: Int
     }
 
     private struct Seek {
         let targetSeconds: Double
         let issuedAt: TimeInterval
+        var hasObservedEcho = false
         var hasAdvanced = false
         var isEffective = false
         var pictureBaseline: Int?
@@ -32,6 +35,8 @@ struct ScrubFrameStats {
     private var lastLost: Int?
     private var displayedPictures = 0
     private var lostPictures = 0
+    private var pictureSampleCount = 0
+    private var displayedChangeCount = 0
 
     init(startedAt: TimeInterval) {
         self.startedAt = startedAt.isFinite ? startedAt : nil
@@ -46,6 +51,13 @@ struct ScrubFrameStats {
     mutating func recordTime(observedSeconds: Double, at: TimeInterval) {
         guard observedSeconds.isFinite, at.isFinite,
               var seek = currentSeek, !seek.hasAdvanced else { return }
+        guard seek.hasObservedEcho else {
+            if VLCSeekCompletionPolicy.isEcho(target: seek.targetSeconds, observed: observedSeconds) {
+                seek.hasObservedEcho = true
+                currentSeek = seek
+            }
+            return
+        }
         let advance = observedSeconds - seek.targetSeconds
         guard advance >= VLCSeekCompletionPolicy.minimumAdvanceSeconds,
               advance <= VLCSeekCompletionPolicy.toleranceSeconds else { return }
@@ -57,6 +69,10 @@ struct ScrubFrameStats {
 
     mutating func recordPictureCounts(displayed: Int, lost: Int, at: TimeInterval) {
         guard at.isFinite else { return }
+        pictureSampleCount += 1
+        if let lastDisplayed, displayed != lastDisplayed {
+            displayedChangeCount += 1
+        }
         if let lastDisplayed, displayed > lastDisplayed {
             displayedPictures += displayed - lastDisplayed
         }
@@ -94,7 +110,9 @@ struct ScrubFrameStats {
             effectiveLatencyP50Ms: Self.percentile(effectiveLatenciesMs, p: 0.5),
             effectiveLatencyP90Ms: Self.percentile(effectiveLatenciesMs, p: 0.9),
             displayedPictures: displayedPictures,
-            lostPictures: lostPictures
+            lostPictures: lostPictures,
+            pictureSampleCount: pictureSampleCount,
+            displayedChangeCount: displayedChangeCount
         )
     }
 

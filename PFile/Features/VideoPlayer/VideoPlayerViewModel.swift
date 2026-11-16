@@ -661,7 +661,7 @@ final class VideoPlayerViewModel: NSObject {
             stats: summary
         )
         MediaDiagnostics.playback(
-            "event=scrub_frame_summary route=\(report.route) durationMs=\(summary.durationMs) seekCount=\(summary.seekCount) advancedSeekCount=\(summary.advancedSeekCount) effectiveSeekCount=\(summary.effectiveSeekCount) effectiveSeeksPerSecond=\(summary.effectiveSeeksPerSecond) advanceLatencyP50Ms=\(summary.advanceLatencyP50Ms) advanceLatencyP90Ms=\(summary.advanceLatencyP90Ms) effectiveLatencyP50Ms=\(summary.effectiveLatencyP50Ms) effectiveLatencyP90Ms=\(summary.effectiveLatencyP90Ms) displayedPictures=\(summary.displayedPictures) lostPictures=\(summary.lostPictures)"
+            "event=scrub_frame_summary route=\(report.route) durationMs=\(summary.durationMs) seekCount=\(summary.seekCount) advancedSeekCount=\(summary.advancedSeekCount) effectiveSeekCount=\(summary.effectiveSeekCount) effectiveSeeksPerSecond=\(summary.effectiveSeeksPerSecond) advanceLatencyP50Ms=\(summary.advanceLatencyP50Ms) advanceLatencyP90Ms=\(summary.advanceLatencyP90Ms) effectiveLatencyP50Ms=\(summary.effectiveLatencyP50Ms) effectiveLatencyP90Ms=\(summary.effectiveLatencyP90Ms) displayedPictures=\(summary.displayedPictures) lostPictures=\(summary.lostPictures) pictureSampleCount=\(summary.pictureSampleCount) displayedChangeCount=\(summary.displayedChangeCount)"
         )
         DebugMetricsLog.record(event: "scrub_frame", payload: report)
     }
