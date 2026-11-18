@@ -126,6 +126,7 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
         UIRequiresFullScreen: true
+        ITSAppUsesNonExemptEncryption: false
         NSLocalNetworkUsageDescription: "ネットワーク上のファイルへアクセスするために使用します"
         NSPhotoLibraryUsageDescription: "写真と動画を表示するために使用します"
         NSBonjourServices:
