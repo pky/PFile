@@ -36,7 +36,9 @@ struct SettingsView: View {
                 purchaseService: appEnvironment.purchaseService
             )
             viewModel = vm
-            await vm.refreshPurchaseState()
+            if Constants.AdMob.isEnabled {
+                await vm.refreshPurchaseState()
+            }
         }
     }
 
@@ -45,13 +47,17 @@ struct SettingsView: View {
     @ViewBuilder
     private func settingsList(viewModel: SettingsViewModel) -> some View {
         List {
-            purchaseSection(viewModel: viewModel)
+            if Constants.AdMob.isEnabled {
+                purchaseSection(viewModel: viewModel)
+            }
             cacheSection(viewModel: viewModel)
             playbackSection(viewModel: viewModel)
             dataSection(viewModel: viewModel)
             backupSection(viewModel: viewModel)
 #if DEBUG
-            debugSection(viewModel: viewModel)
+            if Constants.AdMob.isEnabled {
+                debugSection(viewModel: viewModel)
+            }
 #endif
             infoSection(viewModel: viewModel)
         }

@@ -8,7 +8,9 @@ struct PFileApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
-        MobileAds.shared.start(completionHandler: nil)
+        if Constants.AdMob.isEnabled {
+            MobileAds.shared.start(completionHandler: nil)
+        }
     }
 
     @State private var appEnvironment = AppEnvironment()

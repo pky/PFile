@@ -38,10 +38,11 @@ final class PurchaseService: PurchaseServiceProtocol {
     }
 
     var shouldShowAds: Bool {
+        guard Constants.AdMob.isEnabled else { return false }
 #if DEBUG
-        debugShowsAds && !isAdsRemoved
+        return debugShowsAds && !isAdsRemoved
 #else
-        !isAdsRemoved
+        return !isAdsRemoved
 #endif
     }
 

@@ -37,6 +37,8 @@ enum Constants {
     }
 
     enum AdMob {
+        // 広告と広告削除の購入を出すか。false の間は SDK 初期化もしない
+        static let isEnabled = false
         // Google公式のバナー広告テストID
         static let bannerAdUnitId = "ca-app-pub-3940256099942544/2934735716"
     }
